@@ -1,0 +1,31 @@
+version: 2
+project_name: ocd
+builds:
+  - id: ocd
+    main: ./cmd/ocd
+    binary: ocd
+    env: [CGO_ENABLED=0]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w
+      - -X github.com/ldc-dz/onecloud-cli/internal/cli.Version={{.Version}}
+      - -X github.com/ldc-dz/onecloud-cli/internal/cli.Commit={{.ShortCommit}}
+      - -X github.com/ldc-dz/onecloud-cli/internal/cli.Date={{.Date}}
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+archives:
+  - formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files: [LICENSE, NOTICE, THIRD_PARTY_NOTICES.md, README.md]
+# SPDX SBOM per archive (needs syft on PATH when goreleaser runs).
+sboms:
+  - artifacts: archive
+checksum:
+  name_template: SHA256SUMS
+release:
+  github:
+    owner: ldc-dz
+    name: onecloud-cli
+  draft: true

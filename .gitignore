@@ -1,0 +1,7 @@
+/bin/
+/dist/
+
+# Local agent workspace (sessions, reports, tools): never publish
+.navin/
+.worktrees/
+.tmp/
