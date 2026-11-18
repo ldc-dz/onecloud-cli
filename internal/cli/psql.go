@@ -176,6 +176,15 @@ func newPsqlCmd(cluster func() (config.Cluster, error), via *string) *cobra.Comm
 			if err != nil {
 				return err
 			}
+			// OneCloud Shell sits in the tenant network but cannot sign in to the
+			// access gateway (browser only), and portals publish no VPC address
+			// for PostgreSQL: reach the instance service directly (UAT 2026-11,
+			// PG-SH-CLI-01, OneCloud #2638).
+			if path == "proxied" && *via == "auto" && config.InCloudShell() {
+				if ip := shellServiceAddress(tg.PostgresServerName(), postgresPort); ip != "" {
+					address, path = ip, "direct"
+				}
+			}
 			if errors.Is(caErr, pgcmd.ErrNoCA) {
 				return fmt.Errorf("no CA certificate for %s yet: download \"TLS CA certificate\" for %s from the OneCloud portal, then run again with --ca %s-ca.crt",
 					args[0], tg.VM, tg.VM)
