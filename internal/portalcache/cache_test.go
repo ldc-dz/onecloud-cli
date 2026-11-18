@@ -50,6 +50,11 @@ func TestSessionAndAddressExpiryAndScoping(t *testing.T) {
 		t.Fatalf("other client reused portal bearer: %q, %v", got, err)
 	}
 	other = cl
+	other.PortalURL = "https://other-portal.example"
+	if got, err := s.Token(other); err != nil || got != "" {
+		t.Fatalf("other portal reused bearer: %q, %v", got, err)
+	}
+	other = cl
 	other.Issuer = "https://issuer.example/realms/other"
 	if got, err := s.Token(other); err != nil || got != "" {
 		t.Fatalf("other issuer reused portal bearer: %q, %v", got, err)

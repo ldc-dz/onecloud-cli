@@ -2,16 +2,20 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ldc-dz/onecloud-cli/internal/config"
 )
 
 func run(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 	var out bytes.Buffer
-	root := NewRoot()
+	// Keep command tests offline. The migration resolver is tested with both issuers in config.
+	root := newRoot(func(c config.Config, _ context.Context, name string) (config.Cluster, error) { return c.Cluster(name) })
 	root.SetOut(&out)
 	root.SetErr(&out)
 	root.SetArgs(args)

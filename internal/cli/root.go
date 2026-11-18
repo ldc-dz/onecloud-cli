@@ -33,6 +33,10 @@ func signalContext() (context.Context, context.CancelFunc) {
 
 // NewRoot builds the command tree.
 func NewRoot() *cobra.Command {
+	return newRoot(config.Config.RuntimeCluster)
+}
+
+func newRoot(resolve func(config.Config, context.Context, string) (config.Cluster, error)) *cobra.Command {
 	var cluster, via string
 	var verboseFlag bool
 	root := &cobra.Command{
@@ -60,7 +64,7 @@ func NewRoot() *cobra.Command {
 		if err != nil {
 			return config.Cluster{}, err
 		}
-		return c.Cluster(cluster)
+		return resolve(c, root.Context(), cluster)
 	}
 	root.AddCommand(
 		newLoginCmd(clusterFn),

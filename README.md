@@ -195,8 +195,18 @@ A CA file in the current directory is never used implicitly: pass it with `--ca`
 
 | Cluster | Portal | Notes |
 |---|---|---|
-| `ocd-prd-01` (default) | https://portal.onecloud.ldc.dz | production |
+| `ocd-prd-01` (default) | https://portal.onecloud.dz | production |
 | `ocd-dev-01` | https://portal.dev-01.onecloud.ldc.dz | development |
+
+During the production domain move, commands using the built-in production
+cluster read public OIDC discovery from `auth.onecloud.dz` before using a
+credential. Only the exact old and new `prd-01-portal` issuers are accepted.
+While the old issuer is advertised, the CLI uses the old issuer and portal;
+after the switch it uses the new pair. A cached portal session is not copied
+between origins: sign in again (in Cloud Shell, start a fresh session once the
+broker is configured for the new pair). `ocd config show` is offline and shows
+the configured defaults, not the discovered issuer. TCP and S3 gateway names
+are unchanged.
 
 Settings are built in. An override file changes them field by field:
 `~/.config/ocd/config.yaml` (Linux), `~/Library/Application Support/ocd/config.yaml`
