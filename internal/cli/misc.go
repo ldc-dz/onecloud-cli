@@ -150,6 +150,11 @@ func newDoctorCmd(cluster func() (config.Cluster, error)) *cobra.Command {
 				note("sqlcmd not found on PATH (only needed for ocd mssql)")
 			} else {
 				out, _ := exec.Command(p, "--version").CombinedOutput()
+				// mssql-tools18 sqlcmd has no --version flag; -? prints a
+				// banner whose first line names the ODBC driver version.
+				if strings.Contains(string(out), "Unknown Option") {
+					out, _ = exec.Command(p, "-?").CombinedOutput()
+				}
 				ok("sqlcmd %s (%s)", p, firstLine(string(out)))
 			}
 			if p, err := exec.LookPath("clickhouse-client"); err != nil {
