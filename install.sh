@@ -121,5 +121,17 @@ say "installed ocd ${version} to $dir/ocd"
 
 case ":${PATH}:" in
   *":${dir}:"*) ;;
-  *) say "add ${dir} to your PATH, e.g.: echo 'export PATH=\"${dir}:\$PATH\"' >> ~/.profile" ;;
+  *)
+    # zsh (macOS default login shell) never reads ~/.profile.
+    rc="$HOME/.profile"
+    case "${SHELL:-}" in
+      */zsh) rc="$HOME/.zprofile" ;;
+      */bash)
+        if [ -f "$HOME/.bash_profile" ]; then rc="$HOME/.bash_profile"
+        elif [ -f "$HOME/.bashrc" ]; then rc="$HOME/.bashrc"
+        fi
+        ;;
+    esac
+    say "add ${dir} to your PATH, e.g.: echo 'export PATH=\"${dir}:\$PATH\"' >> ${rc}"
+    ;;
 esac
