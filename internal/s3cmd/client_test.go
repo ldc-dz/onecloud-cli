@@ -490,17 +490,87 @@ func TestPromptConfirmationReusesFrozenManifest(t *testing.T) {
 	}
 }
 
-func TestListURLKeyEncodingIsNotFormOrPathNormalization(t *testing.T) {
-	key := "docs/a b+#%/../control\x01"
+// awsURLKey encodes a key the way AWS S3 does for encoding-type=url: form
+// encoding (space as '+', '+' as '%2B') with '/' kept.
+func awsURLKey(key string) string {
+	parts := strings.Split(key, "/")
+	for i, part := range parts {
+		parts[i] = url.QueryEscape(part)
+	}
+	return strings.Join(parts, "/")
+}
+
+// seaweedURLKey encodes a key the way SeaweedFS does for encoding-type=url:
+// folder segments path encoded with '+' as '%2B' (space as '%20'), the last
+// segment form encoded (space as '+').
+func seaweedURLKey(key string) string {
+	parts := strings.Split(key, "/")
+	for i, part := range parts {
+		if i == len(parts)-1 {
+			parts[i] = url.QueryEscape(part)
+		} else {
+			parts[i] = strings.ReplaceAll(url.PathEscape(part), "+", "%2B")
+		}
+	}
+	return strings.Join(parts, "/")
+}
+
+func listOneEncodedKey(t *testing.T, encoded, prefix string) ([]Object, error) {
+	t.Helper()
 	c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("encoding-type") != "url" {
 			t.Error("not requesting safe XML key encoding")
 		}
-		io.WriteString(w, `<ListBucketResult><EncodingType>url</EncodingType><IsTruncated>false</IsTruncated><Contents><Key>`+url.PathEscape(key)+`</Key><Size>0</Size></Contents></ListBucketResult>`)
+		io.WriteString(w, `<ListBucketResult><EncodingType>url</EncodingType><IsTruncated>false</IsTruncated><Contents><Key>`+encoded+`</Key><Size>0</Size></Contents></ListBucketResult>`)
 	})
-	objects, err := c.List(context.Background(), "docs/")
-	if err != nil || len(objects) != 1 || objects[0].Key != key {
-		t.Fatalf("literal key decoding failed: objects=%v err=%v", objects, err)
+	return c.List(context.Background(), prefix)
+}
+
+func TestListURLKeyEncodingIsNotFormOrPathNormalization(t *testing.T) {
+	keys := []struct{ key, prefix string }{
+		{"docs/a b+#%/../control\x01", "docs/"},
+		// S3-ANY-CLI-06: spaces in folder and file names, accents.
+		{"uat/dossier a/sous-dossier/été 2026 ñ.txt", "uat/dossier a/"},
+		{"uat/a+b c/1+1=2 %20 %2B 100%.txt", "uat/"},
+		{"uat/++  ++/ +", "uat/"},
+	}
+	encoders := map[string]func(string) string{
+		"aws":      awsURLKey,
+		"seaweed":  seaweedURLKey,
+		"slash":    url.QueryEscape,
+		"pathplus": func(k string) string { return strings.ReplaceAll(url.PathEscape(k), "+", "%2B") },
+	}
+	for _, tc := range keys {
+		for name, encode := range encoders {
+			objects, err := listOneEncodedKey(t, encode(tc.key), tc.prefix)
+			if err != nil || len(objects) != 1 || objects[0].Key != tc.key {
+				t.Fatalf("%s: literal key %q decoding failed: objects=%v err=%v", name, tc.key, objects, err)
+			}
+		}
+	}
+}
+
+func TestListURLKeyEncodingSpaceAsPlusIsExactKey(t *testing.T) {
+	// Raw SeaweedFS answer for the UAT object: the listed key must be the
+	// exact key put/get/rm accept, never one with '+' for spaces.
+	objects, err := listOneEncodedKey(t, "uat/dossier%20a/sous-dossier/%C3%A9t%C3%A9+2026+%C3%B1.txt", "uat/dossier a/")
+	if err != nil || len(objects) != 1 || objects[0].Key != "uat/dossier a/sous-dossier/été 2026 ñ.txt" {
+		t.Fatalf("space encoded as '+' not decoded: objects=%v err=%v", objects, err)
+	}
+	if exactKey(objects[0].Key) != nil {
+		t.Fatalf("listed key not reusable as --key: %q", objects[0].Key)
+	}
+	objects, err = listOneEncodedKey(t, "uat/1%2B1", "uat/")
+	if err != nil || len(objects) != 1 || objects[0].Key != "uat/1+1" {
+		t.Fatalf("literal '+' encoded as %%2B not kept: objects=%v err=%v", objects, err)
+	}
+}
+
+func TestListURLKeyEncodingRejectsMalformedEscapes(t *testing.T) {
+	for _, encoded := range []string{"uat/100%", "uat/%zz", "uat/%C3%A"} {
+		if objects, err := listOneEncodedKey(t, encoded, "uat/"); err == nil {
+			t.Fatalf("malformed encoded key %q accepted: %v", encoded, objects)
+		}
 	}
 }
 

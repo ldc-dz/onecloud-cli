@@ -173,8 +173,12 @@ func (c *Client) List(ctx context.Context, prefix string) ([]Object, error) {
 		for _, obj := range output.Contents {
 			key := aws.ToString(obj.Key)
 			if output.EncodingType == types.EncodingTypeUrl {
-				// S3 percent encoding is not form encoding: literal '+' must stay '+'.
-				key, err = url.PathUnescape(key)
+				// encoding-type=url keys are form encoded: AWS S3 and SeaweedFS
+				// send a space as '+' (SeaweedFS as '%20' in folder segments and
+				// '+' in the last one) and a literal '+' as '%2B', so '+' must be
+				// decoded as a space. Path decoding would keep '+' and show a key
+				// that does not exist.
+				key, err = url.QueryUnescape(key)
 				if err != nil {
 					return nil, errors.New("S3 list failed: malformed encoded key")
 				}
