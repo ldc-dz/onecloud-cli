@@ -13,10 +13,10 @@ func TestBuiltinDefaultIsPrd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cl.Name != "ocd-prd-01" || cl.Provider() != "https://auth.onecloud.ldc.dz/realms/prd-01-portal,onecloud-ssh" {
+	if cl.Name != "ocd-prd-01" || cl.Provider() != "https://auth.onecloud.dz/realms/prd-01-portal,onecloud-ssh" {
 		t.Fatalf("unexpected default cluster %+v", cl)
 	}
-	if cl.PortalURL != "https://portal.onecloud.ldc.dz" || cl.PortalClientID != "prd-01-portal-tui" {
+	if cl.PortalURL != "https://portal.onecloud.dz" || cl.PortalClientID != "prd-01-portal-tui" {
 		t.Fatalf("unexpected prd portal settings %+v", cl)
 	}
 	dev, err := c.Cluster("ocd-dev-01")
@@ -33,7 +33,7 @@ func TestPrdSSHAndPostgres(t *testing.T) {
 	if err := prd.SSHAvailable(); err != nil {
 		t.Fatalf("want VM SSH on prd, got %v", err)
 	}
-	if prd.Provider() != "https://auth.onecloud.ldc.dz/realms/prd-01-portal,onecloud-ssh" {
+	if prd.Provider() != "https://auth.onecloud.dz/realms/prd-01-portal,onecloud-ssh" {
 		t.Fatalf("unexpected prd provider %q", prd.Provider())
 	}
 	o, _ := Parse([]byte("clusters:\n  ocd-prd-01:\n    ssh: false\n    sshReason: paused\n"))

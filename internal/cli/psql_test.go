@@ -134,7 +134,7 @@ func TestPsqlThroughTunnel(t *testing.T) {
 	for _, want := range []string{
 		"host=pgoidc01-pg-access.tenant-demo-000001-postgresql.svc hostaddr=127.0.0.1 port=",
 		" dbname=app user=app sslmode=verify-full sslrootcert=" + stored,
-		" oauth_issuer=https://auth.onecloud.ldc.dz/realms/prd-01-portal oauth_client_id=prd-01-postgresql",
+		" oauth_issuer=https://auth.onecloud.dz/realms/prd-01-portal oauth_client_id=prd-01-postgresql",
 	} {
 		if !strings.Contains(args[0], want) {
 			t.Fatalf("conninfo %q lacks %q", args[0], want)
@@ -237,7 +237,7 @@ func TestPsqlDownloadsCAFromPortal(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/realm/.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]string{
-			"authorization_endpoint": srv.URL + "/realm/auth", "token_endpoint": srv.URL + "/realm/token"})
+			"issuer": srv.URL + "/realm", "authorization_endpoint": srv.URL + "/realm/auth", "token_endpoint": srv.URL + "/realm/token"})
 	})
 	mux.HandleFunc("/realm/token", func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
@@ -368,7 +368,7 @@ func TestPsqlDirectFromInventory(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/realm/.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]string{
-			"authorization_endpoint": srv.URL + "/realm/auth", "token_endpoint": srv.URL + "/realm/token"})
+			"issuer": srv.URL + "/realm", "authorization_endpoint": srv.URL + "/realm/auth", "token_endpoint": srv.URL + "/realm/token"})
 	})
 	mux.HandleFunc("/realm/token", func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()

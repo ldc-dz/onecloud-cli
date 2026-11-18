@@ -47,16 +47,16 @@ type Client struct {
 }
 
 func (c Client) http() *http.Client {
+	client := http.Client{Timeout: 30 * time.Second}
 	if c.HTTP != nil {
-		return c.HTTP
+		client = *c.HTTP
 	}
-	return &http.Client{
-		Timeout:       30 * time.Second,
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return &client
 }
 
 type discovery struct {
+	Issuer                string `json:"issuer"`
 	AuthorizationEndpoint string `json:"authorization_endpoint"`
 	TokenEndpoint         string `json:"token_endpoint"`
 }
@@ -79,8 +79,15 @@ func (c Client) discover(ctx context.Context) (discovery, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&d); err != nil {
 		return d, fmt.Errorf("portal sign-in: discovery: %w", err)
 	}
-	if d.AuthorizationEndpoint == "" || d.TokenEndpoint == "" {
-		return d, errors.New("portal sign-in: discovery has no authorization or token endpoint")
+	if d.Issuer != c.Issuer {
+		return d, errors.New("portal sign-in: discovery issuer mismatch")
+	}
+	base := req.URL
+	for _, endpoint := range []string{d.AuthorizationEndpoint, d.TokenEndpoint} {
+		u, err := url.Parse(endpoint)
+		if err != nil || u.Scheme != base.Scheme || u.Host != base.Host || u.User != nil || u.Fragment != "" {
+			return d, errors.New("portal sign-in: invalid discovery endpoint origin")
+		}
 	}
 	return d, nil
 }

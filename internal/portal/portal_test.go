@@ -24,6 +24,7 @@ func TestSignInAndFindCA(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/realm/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]string{
+			"issuer":                 srv.URL + "/realm",
 			"authorization_endpoint": srv.URL + "/realm/auth",
 			"token_endpoint":         srv.URL + "/realm/token",
 		})
@@ -428,5 +429,41 @@ func TestRevealErrorsAreRedactedAndTyped(t *testing.T) {
 	}
 	if _, err := (Client{PortalURL: "http://127.0.0.1:1"}).Reveal(context.Background(), "tok-SECRET", "abc"); err == nil || strings.Contains(err.Error(), "SECRET") {
 		t.Fatalf("transport error = %v", err)
+	}
+}
+
+func TestInventoryDoesNotFollowRedirect(t *testing.T) {
+	var calls int
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calls++ }))
+	defer target.Close()
+	source := httptest.NewServer(http.RedirectHandler(target.URL, http.StatusTemporaryRedirect))
+	defer source.Close()
+	c := Client{PortalURL: source.URL, HTTP: source.Client()}
+	if _, err := c.Connections(context.Background(), "test-only"); err == nil || calls != 0 {
+		t.Fatalf("followed portal redirect: calls=%d err=%v", calls, err)
+	}
+}
+
+func TestDiscoveryMustRemainAtSelectedIssuer(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(map[string]string)
+	}{
+		{"issuer", func(d map[string]string) { d["issuer"] += "-other" }},
+		{"token", func(d map[string]string) { d["token_endpoint"] = "https://example.com/token" }},
+		{"authorization", func(d map[string]string) { d["authorization_endpoint"] = "https://example.com/login" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var srv *httptest.Server
+			srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				d := map[string]string{"issuer": srv.URL + "/realm", "token_endpoint": srv.URL + "/token", "authorization_endpoint": srv.URL + "/authorize"}
+				tc.change(d)
+				_ = json.NewEncoder(w).Encode(d)
+			}))
+			defer srv.Close()
+			if _, err := (Client{Issuer: srv.URL + "/realm"}).discover(context.Background()); err == nil {
+				t.Fatal("invalid discovery accepted")
+			}
+		})
 	}
 }
