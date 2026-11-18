@@ -56,6 +56,11 @@ type Cluster struct {
 	// portal public client, in the Issuer realm. Empty: no download.
 	PortalURL      string `yaml:"portalURL,omitempty"`
 	PortalClientID string `yaml:"portalClientID,omitempty"`
+	// ShellClientID is the Keycloak client of OneCloud Shell. Inside the
+	// Shell (OCD_CLOUD_SHELL=1) no loopback sign-in is possible: the Shell
+	// broker writes the user's portal session, issued to this client, into
+	// the ocd portal cache, and ocd reads the inventory with it.
+	ShellClientID string `yaml:"shellClientID,omitempty"`
 	// S3SSOEndpoint is the object-storage gateway that accepts a OneCloud
 	// Portal sign-in (STS AssumeRoleWithWebIdentity). Empty: ocd s3 uses the
 	// static keys published by the portal.
@@ -134,6 +139,7 @@ func Builtin() Config {
 				PostgresClientID: "dev-01-postgresql",
 				PortalURL:        "https://portal.dev-01.onecloud.ldc.dz",
 				PortalClientID:   "dev-01-portal-tui",
+				ShellClientID:    "dev-01-shell",
 				S3SSOEndpoint:    "https://s3-sso.dev-01.onecloud.ldc.dz",
 				S3SSOClientID:    "onecloud-s3",
 				S3SSOFlow:        "pkce",
@@ -149,6 +155,7 @@ func Builtin() Config {
 				PostgresClientID: "prd-01-postgresql",
 				PortalURL:        "https://portal.onecloud.ldc.dz",
 				PortalClientID:   "prd-01-portal-tui",
+				ShellClientID:    "prd-01-shell",
 				S3SSOEndpoint:    "https://s3-sso.onecloud.ldc.dz",
 				S3SSOClientID:    "onecloud-s3",
 				S3SSOFlow:        "pkce",
@@ -243,6 +250,9 @@ func (c Config) Merge(o Config) Config {
 		if v.S3SSOFlow != "" {
 			base.S3SSOFlow = v.S3SSOFlow
 		}
+		if v.ShellClientID != "" {
+			base.ShellClientID = v.ShellClientID
+		}
 		out.Clusters[k] = base
 	}
 	for k, v := range out.Clusters {
@@ -314,8 +324,16 @@ func (c Config) Cluster(name string) (Cluster, error) {
 	if err := CheckEndpoint(cl.PomeriumURL, true); err != nil {
 		return Cluster{}, fmt.Errorf("cluster %s: pomeriumURL: %w", name, err)
 	}
+	// In OneCloud Shell the portal session comes from the Shell broker, so it
+	// is issued to the Shell client, not to the loopback CLI client.
+	if InCloudShell() && cl.ShellClientID != "" {
+		cl.PortalClientID = cl.ShellClientID
+	}
 	return cl, nil
 }
+
+// InCloudShell reports whether ocd runs in a OneCloud Shell session.
+func InCloudShell() bool { return os.Getenv("OCD_CLOUD_SHELL") == "1" }
 
 // CheckEndpoint accepts an empty value or an https URL. Plain http is only
 // accepted towards a loopback address (local tests and development). With

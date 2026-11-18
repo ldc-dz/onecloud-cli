@@ -94,6 +94,19 @@ func readyTestCluster() config.Cluster {
 	return config.Cluster{PortalURL: "https://portal.example", PortalClientID: "portal-test"}
 }
 
+func TestCloudShellS3UsesPortalKeys(t *testing.T) {
+	// The STS sign-in needs a local browser; the Shell reveals the portal keys.
+	cl := config.Cluster{S3SSOEndpoint: "https://s3-sso.example"}
+	t.Setenv("OCD_CLOUD_SHELL", "")
+	if !useS3SSO(cl) {
+		t.Fatal("workstation must use the OneCloud sign-in by default")
+	}
+	t.Setenv("OCD_CLOUD_SHELL", "1")
+	if useS3SSO(cl) {
+		t.Fatal("Cloud Shell must not start the loopback STS sign-in")
+	}
+}
+
 func TestHeadlessPortalSkipsWithoutToken(t *testing.T) {
 	t.Setenv("OCD_CLOUD_SHELL", "")
 	t.Setenv("OCD_BROWSER", "")

@@ -27,14 +27,14 @@ var postgresPort = 5432
 // Cloud Shell's SSO callback is on the browser-facing shell server, not on
 // the toolbox loopback. Cached portal sessions are still usable but fresh
 // native loopback portal sign-ins must never run inside a remote shell.
-func nativePortalAvailable() bool { return os.Getenv("OCD_CLOUD_SHELL") != "1" }
+func nativePortalAvailable() bool { return !config.InCloudShell() }
 
 var errPortalNonInteractive = errors.New("portal lookup skipped: no saved portal session and no local interactive terminal/browser")
 
 // errCloudShellGateway: the access gateway signs in through a browser
 // callback, which OneCloud Shell cannot receive.
 var errCloudShellGateway = errors.New("OneCloud Shell cannot sign in to the access gateway (it needs a browser); connect over your tenant network instead: ocd ssh --via direct --address <SSH host shown in the portal> <tenant>/<vm>")
-var errCloudShellPortal = errors.New("Cloud Shell cannot complete the portal's localhost callback; use an existing session or --via proxied")
+var errCloudShellPortal = errors.New("OneCloud Shell has no portal session for ocd (it lasts about an hour after you sign in to the Shell): reload the Shell page to sign in again")
 
 func maySignInPortal(force bool) bool {
 	if !nativePortalAvailable() {

@@ -20,7 +20,7 @@ const s3Timeout = 30 * time.Minute
 // openBucket resolves an object-storage instance, reads its published
 // endpoint and bucket, and reveals its access keys into memory only.
 func openBucket(ctx context.Context, cl config.Cluster, typed string) (*s3cmd.Client, string, error) {
-	if cl.S3SSOEndpoint != "" && !useStaticS3Keys {
+	if useS3SSO(cl) {
 		return openSSOBucket(ctx, cl, typed)
 	}
 	sess, e, err := pickService(ctx, cl, typed, "s3 ls", services.ObjectStorage)
@@ -47,6 +47,13 @@ func openBucket(ctx context.Context, cl config.Cluster, typed string) (*s3cmd.Cl
 		SecretKey: firstValue(vals, e, "secretKey", "secret_key", "AWS_SECRET_ACCESS_KEY"),
 	})
 	return c, e.Target(), err
+}
+
+// useS3SSO reports whether ocd s3 signs in to the STS gateway. That sign-in
+// needs a local browser, so OneCloud Shell uses the portal keys, revealed
+// with the portal session the Shell broker provides.
+func useS3SSO(cl config.Cluster) bool {
+	return cl.S3SSOEndpoint != "" && !useStaticS3Keys && !config.InCloudShell()
 }
 
 func newS3Cmd(cluster func() (config.Cluster, error)) *cobra.Command {

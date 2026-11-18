@@ -53,6 +53,28 @@ func TestPrdSSHAndPostgres(t *testing.T) {
 	}
 }
 
+func TestCloudShellUsesShellPortalClient(t *testing.T) {
+	// UAT 2026-11 (OneCloud #2754): in OneCloud Shell the portal session is
+	// written by the Shell broker and issued to the Shell client.
+	t.Setenv("OCD_CLOUD_SHELL", "")
+	prd, err := Builtin().Merge(Config{}).Cluster("ocd-prd-01")
+	if err != nil || prd.PortalClientID != "prd-01-portal-tui" || prd.ShellClientID != "prd-01-shell" {
+		t.Fatalf("workstation prd portal client %+v %v", prd, err)
+	}
+	t.Setenv("OCD_CLOUD_SHELL", "1")
+	for name, want := range map[string]string{"ocd-prd-01": "prd-01-shell", "ocd-dev-01": "dev-01-shell"} {
+		cl, err := Builtin().Merge(Config{}).Cluster(name)
+		if err != nil || cl.PortalClientID != want {
+			t.Fatalf("%s in Cloud Shell: portal client %q, %v", name, cl.PortalClientID, err)
+		}
+	}
+	o, _ := Parse([]byte("clusters:\n  ocd-prd-01:\n    shellClientID: other-shell\n"))
+	cl, _ := Builtin().Merge(o).Cluster("ocd-prd-01")
+	if cl.PortalClientID != "other-shell" {
+		t.Fatalf("shellClientID override: %q", cl.PortalClientID)
+	}
+}
+
 func TestDisabledClusterRefused(t *testing.T) {
 	o, _ := Parse([]byte("clusters:\n  ocd-prd-01:\n    enabled: false\n    reason: maintenance\n"))
 	_, err := Builtin().Merge(o).Cluster("ocd-prd-01")

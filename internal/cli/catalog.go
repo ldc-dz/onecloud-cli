@@ -246,7 +246,17 @@ func newSQLCmd(cluster func() (config.Cluster, error), s sqlEngine) *cobra.Comma
 				return fmt.Errorf("%s: the portal returned no database password", e.Target())
 			}
 			host := fmt.Sprintf("%s-%s-%s.%s", tg.VM, s.route, tg.TenantID, cl.TCPDomain)
-			open := func(context.Context) (dbclient.Tunnel, error) {
+			var endpoint string
+			if config.InCloudShell() {
+				// The Shell is in the tenant network: no gateway sign-in.
+				if endpoint, err = tenantEndpoint(e); err != nil {
+					return err
+				}
+			}
+			open := func(ctx context.Context) (dbclient.Tunnel, error) {
+				if endpoint != "" {
+					return openDirect(ctx, endpoint)
+				}
 				setupTunnelLogging()
 				tun, dst, err := newTunnel(host+":443", cl.PomeriumURL, "")
 				if err != nil {
@@ -260,7 +270,11 @@ func newSQLCmd(cluster func() (config.Cluster, error), s sqlEngine) *cobra.Comma
 				}
 				return gatewayTunnel{srv: srv, cancel: cancel, restore: filterPomeriumNotice(dst)}, nil
 			}
-			say("Connecting to %s via the OneCloud access gateway", e.Target())
+			if endpoint != "" {
+				say("Connecting to %s directly over your tenant network", e.Target())
+			} else {
+				say("Connecting to %s via the OneCloud access gateway", e.Target())
+			}
 			// Ctrl-C belongs to the client (it cancels the running query).
 			sig := make(chan os.Signal, 1)
 			signal.Notify(sig, os.Interrupt)
