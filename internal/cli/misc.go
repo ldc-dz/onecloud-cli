@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -18,6 +19,16 @@ import (
 	"github.com/ldc-dz/onecloud-cli/internal/config"
 	"github.com/ldc-dz/onecloud-cli/internal/pgcmd"
 )
+
+// doctor must stay fast even when the portal is slow, so the saved-session
+// inventory lookup that picks a probe target is hard-bounded.
+const autoProbeTimeout = 8 * time.Second
+
+var defaultEnginePorts = map[string]int{
+	"postgresql": 5432,
+	"mssql":      1433,
+	"clickhouse": 8123,
+}
 
 func newConfigCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "config", Short: "Show ocd configuration"}
@@ -115,7 +126,15 @@ func newDoctorCmd(cluster func() (config.Cluster, error)) *cobra.Command {
 					}
 				}
 			} else {
-				note("VPN reachability: no probe target set (set OCD_VPN_PROBE_ADDRESS to a tenant VM/database IP and optionally OCD_VPN_PROBE_PORT to 5432)")
+				if addr, port, err := autoProbeTarget(cl); err == nil {
+					if probeTCP(addr, port) {
+						ok("VPN reachability: %s:%d accepts TCP connections (tenant network path available)", addr, port)
+					} else {
+						note("VPN reachability: %s:%d not reachable; ocd --via auto will use the OneCloud access gateway", addr, port)
+					}
+				} else {
+					note("VPN reachability: no probe target set (set OCD_VPN_PROBE_ADDRESS to a tenant VM/database IP and optionally OCD_VPN_PROBE_PORT to 5432)")
+				}
 			}
 			if p, err := exec.LookPath("psql"); err != nil {
 				note("psql not found on PATH (only needed for ocd psql)")
@@ -126,6 +145,18 @@ func newDoctorCmd(cluster func() (config.Cluster, error)) *cobra.Command {
 				} else {
 					ok("psql %s (%s)", p, strings.TrimSpace(string(out)))
 				}
+			}
+			if p, err := exec.LookPath("sqlcmd"); err != nil {
+				note("sqlcmd not found on PATH (only needed for ocd mssql)")
+			} else {
+				out, _ := exec.Command(p, "--version").CombinedOutput()
+				ok("sqlcmd %s (%s)", p, firstLine(string(out)))
+			}
+			if p, err := exec.LookPath("clickhouse-client"); err != nil {
+				note("clickhouse-client not found on PATH (only needed for ocd clickhouse)")
+			} else {
+				out, _ := exec.Command(p, "--version").CombinedOutput()
+				ok("clickhouse-client %s (%s)", p, firstLine(string(out)))
 			}
 			if err := cl.SSHAvailable(); err != nil {
 				note("%v", err)
@@ -155,4 +186,60 @@ func newDoctorCmd(cluster func() (config.Cluster, error)) *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func firstLine(s string) string {
+	if i := strings.IndexAny(s, "\r\n"); i >= 0 {
+		s = s[:i]
+	}
+	return strings.TrimSpace(s)
+}
+
+// autoProbeTarget picks a tenant-network probe target from the saved portal
+// session without signing in: a VM's VPC address first, then a database
+// connection exposing a VPC address. Doctor only ever reads the inventory.
+func autoProbeTarget(cl config.Cluster) (string, int, error) {
+	if cl.PortalURL == "" || cl.PortalClientID == "" {
+		return "", 0, errors.New("portal not configured")
+	}
+	store, err := portalStore()
+	if err != nil {
+		return "", 0, err
+	}
+	token, err := store.Token(cl)
+	if err != nil {
+		return "", 0, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), autoProbeTimeout)
+	defer cancel()
+	client := newPortalClient(cl)
+	if instances, err := client.Instances(ctx, token); err == nil {
+		for _, i := range instances {
+			if i.Service != "vm" {
+				continue
+			}
+			vpc, ok := i.Outputs["vpc"].(map[string]any)
+			if !ok {
+				continue
+			}
+			addr, _ := vpc["address"].(string)
+			if a, verr := validAddress(addr); verr == nil {
+				return a, 22, nil
+			}
+		}
+	}
+	conns, err := client.Connections(ctx, token)
+	if err != nil {
+		return "", 0, err
+	}
+	for _, conn := range conns {
+		port, known := defaultEnginePorts[conn.Engine]
+		if !known {
+			continue
+		}
+		if addr, aerr := validAddress(conn.VPCAddress); aerr == nil {
+			return addr, port, nil
+		}
+	}
+	return "", 0, errors.New("no tenant-network address in the portal inventory")
 }
