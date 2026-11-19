@@ -25,7 +25,15 @@ function Die($m) { throw "ocd-install: error: $m" }
 
 $token = if ($env:GITHUB_TOKEN) { $env:GITHUB_TOKEN } elseif ($env:GH_TOKEN) { $env:GH_TOKEN } else { $null }
 if (-not $token -and (Get-Command gh -ErrorAction SilentlyContinue)) {
+    # gh prints "no oauth token found" on stderr and exits 1 when it is not
+    # signed in. Windows PowerShell 5.1 turns redirected stderr of a native
+    # command into an error, which 'Stop' made fatal: the install aborted on a
+    # machine that has gh but no GitHub login. The token is optional, so that
+    # answer is not an error, and gh's exit code must not outlive this call.
+    $ErrorActionPreference = 'Continue'
     $token = (& gh auth token 2>$null | Out-String).Trim()
+    $ErrorActionPreference = 'Stop'
+    $global:LASTEXITCODE = 0
 }
 # Keep only the line that looks like a GitHub token: a wrapper around gh can
 # print status lines on stdout, and a line break breaks the header.

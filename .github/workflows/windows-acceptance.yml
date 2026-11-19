@@ -17,6 +17,10 @@ on:
         description: Release to install, e.g. v0.5.5 (empty = latest stable, as in the docs)
         required: false
         default: ""
+      install_ref:
+        description: Branch or tag install.ps1 is read from (main = the documented command; another ref tests a change before it is merged)
+        required: false
+        default: main
       command:
         description: Optional command line run after the install; its output and exit code are printed, it never signs in
         required: false
@@ -39,6 +43,7 @@ jobs:
     env:
       OCD_VERSION: ${{ inputs.ocd_version }}
       OCD_COMMAND: ${{ inputs.command }}
+      INSTALL_REF: ${{ inputs.install_ref }}
     steps:
       - name: Machine and GitHub login state
         run: |
@@ -55,7 +60,9 @@ jobs:
 
       - name: Install ocd with the documented command
         run: |
-          irm https://raw.githubusercontent.com/ldc-dz/onecloud-cli/main/install.ps1 | iex
+          if ($env:INSTALL_REF -notmatch '^[A-Za-z0-9._/-]+$') { throw 'unexpected install_ref' }
+          Write-Host "> irm https://raw.githubusercontent.com/ldc-dz/onecloud-cli/$env:INSTALL_REF/install.ps1 | iex"
+          irm "https://raw.githubusercontent.com/ldc-dz/onecloud-cli/$env:INSTALL_REF/install.ps1" | iex
 
       - name: Run ocd from a new shell
         run: |
