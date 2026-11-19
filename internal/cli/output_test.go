@@ -18,6 +18,17 @@ func TestCopyFilteredHidesPomeriumNotice(t *testing.T) {
 	}
 }
 
+// When ocd announces the gateway sign-in itself, pomerium-cli's block is
+// dropped entirely (no second, shorter notice).
+func TestCopyFilteredDropsPomeriumNoticeWithoutHost(t *testing.T) {
+	in := "Your browser has been opened to visit:\n\nhttps://access.example/.pomerium/sign_in?x=1\n\nreal error\n"
+	var out bytes.Buffer
+	copyFiltered(bytes.NewBufferString(in), &out, "")
+	if out.String() != "real error\n" {
+		t.Fatalf("got %q", out.String())
+	}
+}
+
 func TestLibOutputQuietUnlessVerbose(t *testing.T) {
 	t.Setenv(VerboseEnv, "")
 	if verbose() {

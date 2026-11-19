@@ -80,7 +80,9 @@ func quietStdout(fn func() error) error {
 
 // filterPomeriumNotice replaces pomerium-cli's "Your browser has been opened
 // to visit: <long URL>" block (written straight to os.Stderr) with one short
-// line, unless -v is set. It returns a function that restores os.Stderr.
+// line, unless -v is set. An empty host drops the block: ocd then announces
+// the sign-in itself (accessTunnel.announceSignIn). It returns a function
+// that restores os.Stderr.
 func filterPomeriumNotice(host string) func() {
 	if verbose() {
 		return func() {}
@@ -123,7 +125,9 @@ func copyFiltered(r io.Reader, out io.Writer, host string) {
 	for sc.Scan() {
 		line := sc.Text()
 		if strings.HasPrefix(line, "Your browser has been opened to visit:") {
-			fmt.Fprintf(out, "Authorizing access to %s (in your browser)\n", host)
+			if host != "" {
+				fmt.Fprintf(out, "Authorizing access to %s (in your browser)\n", host)
+			}
 			skipping = true
 			continue
 		}

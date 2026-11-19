@@ -14,7 +14,6 @@ package browser
 
 import (
 	"encoding/json"
-	"errors"
 	"os"
 	"os/exec"
 	"runtime"
@@ -27,8 +26,8 @@ import (
 // EnvCommand overrides the configured browser command.
 const EnvCommand = "OCD_BROWSER"
 
-// HelperEnv marks an ocd process started only to open one page (the
-// Pomerium tunnel runs `<browser command> <url>` and ocd passes itself).
+// HelperEnv marks an ocd process started by the Pomerium tunnel as its
+// browser command (it runs `<browser command> <url>` and ocd passes itself).
 const HelperEnv = "OCD_BROWSER_HELPER"
 
 // Opener opens sign-in pages.
@@ -165,14 +164,16 @@ func x11Active() string {
 
 // HelperMain handles `ocd <url>` started by the Pomerium tunnel as its
 // browser command. It returns false when args are not such a call.
-func HelperMain(args []string, configured string) (bool, error) {
+//
+// The call is only acknowledged. pomerium-cli abandons the gateway sign-in
+// when its browser command fails, and this process has no terminal to print
+// to, so the ocd process that owns the tunnel opens the page, or prints its
+// address when no browser can be opened (headless Linux, WSL without a
+// browser opener, OCD_BROWSER=none). Opening it here too would open two tabs.
+func HelperMain(args []string, _ string) (bool, error) {
 	if os.Getenv(HelperEnv) != "1" || len(args) != 1 ||
 		!(strings.HasPrefix(args[0], "https://") || strings.HasPrefix(args[0], "http://")) {
 		return false, nil
 	}
-	o := New(configured)
-	if o.Disabled() {
-		return true, errors.New("browser disabled (OCD_BROWSER=none); open the address printed above")
-	}
-	return true, o.Open(args[0])
+	return true, nil
 }

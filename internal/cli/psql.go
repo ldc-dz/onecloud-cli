@@ -13,7 +13,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/pomerium/cli/tunnel"
 	"github.com/spf13/cobra"
 
 	"github.com/ldc-dz/onecloud-cli/internal/config"
@@ -33,9 +32,11 @@ func caStore() (pgcmd.CAStore, error) {
 
 // tunnelServer accepts local connections and carries each one through tun.
 type tunnelServer struct {
-	ln  net.Listener
-	tun *tunnel.Tunnel
-	wg  sync.WaitGroup
+	ln        net.Listener
+	tun       *accessTunnel
+	target    string
+	noBrowser bool
+	wg        sync.WaitGroup
 }
 
 func (s *tunnelServer) Port() int { return s.ln.Addr().(*net.TCPAddr).Port }
@@ -55,7 +56,14 @@ func (s *tunnelServer) serve(ctx context.Context) {
 		go func() {
 			defer s.wg.Done()
 			defer conn.Close()
-			_ = s.tun.Run(ctx, conn, quietEvents{tunnel.LogEvents()})
+			ev := s.tun.events(s.noBrowser)
+			err := s.tun.Run(ctx, conn, ev)
+			// A connection the gateway never established ends as a bare
+			// "connection reset" in the native client: say why. Failures
+			// after it was established are logged by the event sink.
+			if !ev.connected.Load() && !isNormalClose(err) {
+				say("ocd: %v", gatewayError(s.target, s.tun.dst, err))
+			}
 		}()
 	}
 }
@@ -64,15 +72,57 @@ func (s *tunnelServer) serve(ctx context.Context) {
 // every connection to dst through Pomerium until ctx ends. Connections not
 // owned by the current user are refused where the OS allows checking
 // (see localtunnel.go); TCP is kept because libpq has no TLS over Unix sockets.
-func startTunnel(ctx context.Context, tun *tunnel.Tunnel, port int) (*tunnelServer, error) {
+func startTunnel(ctx context.Context, tun *accessTunnel, target string, port int, noBrowser bool) (*tunnelServer, error) {
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
 		return nil, fmt.Errorf("local tunnel port: %w", err)
 	}
-	s := &tunnelServer{ln: ln, tun: tun}
+	s := &tunnelServer{ln: ln, tun: tun, target: target, noBrowser: noBrowser}
 	go s.serve(ctx)
 	go func() { <-ctx.Done(); _ = ln.Close() }()
 	return s, nil
+}
+
+// gatewayTunnel is a loopback listener carried by the access gateway.
+type gatewayTunnel struct {
+	srv     *tunnelServer
+	cancel  context.CancelFunc
+	restore func()
+}
+
+func (g gatewayTunnel) Port() int { return g.srv.Port() }
+func (g gatewayTunnel) Close() error {
+	g.restore()
+	g.cancel()
+	return nil
+}
+
+// openGatewayTunnel is the access-gateway path of ocd psql, ocd clickhouse
+// and ocd mssql: it signs in to the gateway and checks that host answers
+// through it (accessTunnel.check), then listens on 127.0.0.1:port for the
+// native client. A failure is returned as what failed and what to do, before
+// the client starts. target is the <tenant>/<instance> the user asked for.
+func openGatewayTunnel(target, host, pomeriumURL string, port int, noBrowser bool) (gatewayTunnel, error) {
+	setupTunnelLogging()
+	tun, dst, err := newTunnel(host+":443", pomeriumURL, "")
+	if err != nil {
+		return gatewayTunnel{}, err
+	}
+	restore := tun.filterNotice()
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := tun.check(ctx, target, noBrowser); err != nil {
+		cancel()
+		restore()
+		return gatewayTunnel{}, err
+	}
+	srv, err := startTunnel(ctx, tun, target, port, noBrowser)
+	if err != nil {
+		cancel()
+		restore()
+		return gatewayTunnel{}, err
+	}
+	debugf("tunnel 127.0.0.1:%d -> %s", srv.Port(), dst)
+	return gatewayTunnel{srv: srv, cancel: cancel, restore: restore}, nil
 }
 
 // noOAuthHint explains a psql/libpq built without the OAuth device flow.
@@ -210,22 +260,13 @@ func newPsqlCmd(cluster func() (config.Cluster, error), via *string) *cobra.Comm
 			if path == "direct" {
 				dbAddress = address
 			} else {
-				setupTunnelLogging()
-				host := tg.PostgresHost(cl.TCPDomain)
-				tun, dst, err := newTunnel(host+":443", cl.PomeriumURL, "")
+				gw, err := openGatewayTunnel(args[0], tg.PostgresHost(cl.TCPDomain), cl.PomeriumURL, port, noBrowser)
 				if err != nil {
 					return err
 				}
-				ctx, done := context.WithCancel(context.Background())
-				cancel = done
+				cancel, restore = gw.cancel, gw.restore
 				defer cancel()
-				srv, err := startTunnel(ctx, tun, port)
-				if err != nil {
-					return err
-				}
-				dbPort = srv.Port()
-				debugf("tunnel 127.0.0.1:%d -> %s", dbPort, dst)
-				restore = filterPomeriumNotice(dst)
+				dbPort = gw.Port()
 			}
 
 			conninfo := pgcmd.ConnInfo(pgcmd.Options{

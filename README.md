@@ -88,7 +88,7 @@ or `000001`; `ocd psql` needs the full tenant name.
 | `ocd ssh <tenant>/<vm> [-- cmd]` | SSH directly over VPC when reachable or via gateway; refreshes expired certificate |
 | `ocd psql <tenant>/<instance> [-- psql args]` | psql directly or via gateway with OAuth sign-in and `verify-full` TLS |
 | `ocd tunnel <host:port>` | raw access-gateway TCP tunnel (used by proxied `ocd ssh` as ProxyCommand) |
-| `ocd clickhouse` (`ch`) `[<tenant>/<instance>] [-- args]` | `clickhouse-client` through the access gateway, password from the portal |
+| `ocd clickhouse` (`ch`) `[<tenant>/<instance>] [-- args]` | the ClickHouse client through the access gateway, password from the portal (see [ClickHouse client](#clickhouse-client)) |
 | `ocd mssql [<tenant>/<instance>] [-- args]` | `sqlcmd` through the access gateway, password from the portal |
 | `ocd s3 ls\|get\|put\|rm [<tenant>/<instance>]` | objects of a managed object-storage instance |
 | `ocd services [--json] [--type t] [--tenant t]` | list the services you can reach and their status |
@@ -136,7 +136,8 @@ ocd s3 rm demo-000001/store01 --prefix reports/ --recursive --dry-run
 - Database passwords and S3 keys are read from the portal for the current run,
   kept in memory only, and passed to `clickhouse-client` (`CLICKHOUSE_PASSWORD`)
   and `sqlcmd` (`SQLCMDPASSWORD`) through the environment, never on the command
-  line or on disk. Install `clickhouse-client` or `sqlcmd` yourself.
+  line or on disk. Install the ClickHouse client (see below) or `sqlcmd`
+  yourself.
 - **Compatibility TLS.** The access gateway encrypts and authorizes the
   connection, but the database leg is not verified yet: ClickHouse uses native
   TCP without database TLS (no notice is printed for it), and SQL Server runs
@@ -149,6 +150,42 @@ ocd s3 rm demo-000001/store01 --prefix reports/ --recursive --dry-run
   --recursive`; it refuses the bucket root and folder-like keys, needs
   `--dry-run` or `--yes`, removes only the objects listed once at the start,
   never removes old versions, and is not transactional.
+
+### ClickHouse client
+
+`ocd clickhouse` starts the official ClickHouse client that is already on
+your machine: `clickhouse-client` when it is on `PATH`, otherwise the
+`clickhouse` program, run as `clickhouse client`. Before any sign-in it runs
+`--version` on what it found and stops unless the answer starts with
+`ClickHouse client version`. Another program placed under that name does not
+read the password `ocd` passes and only fails later with a misleading
+`Authentication failed`.
+
+| System | How to get the client |
+|---|---|
+| Linux | `curl https://clickhouse.com/ \| sh` downloads the `clickhouse` program into the current folder; move it to a folder on `PATH`, e.g. `mv clickhouse ~/.local/bin/`. On Debian/Ubuntu and RHEL you can instead add the ClickHouse package repository and install the `clickhouse-client` package. |
+| macOS | `curl https://clickhouse.com/ \| sh`, then move `clickhouse` to a folder on `PATH`, e.g. `sudo mv clickhouse /usr/local/bin/`. |
+| Windows | ClickHouse publishes no native Windows client. Use WSL 2: inside your Linux distribution install `ocd` (`install.sh`) and the ClickHouse client as on Linux, and run `ocd clickhouse` there. Without WSL, use OneCloud Shell from the portal (`ocd` and the client are preinstalled) or DBeaver with the OneCloud plugin. |
+
+The commands are those of the
+[ClickHouse installation guide](https://clickhouse.com/docs/install).
+`ocd doctor` shows which client `ocd` will use.
+
+**Sign-in without a browser (WSL, servers).** A database session through the
+access gateway needs two sign-ins the first time: the portal (to read your
+services and the password) and the access gateway. When `ocd` cannot open a
+browser, as in WSL without a browser opener or over SSH, or when you pass
+`--no-browser` or set `OCD_BROWSER=none`, it prints each address
+(`Open this address in your browser: ...`, then
+`Authorize access to ...: open this address in your browser: ...`) and waits
+up to five minutes. Open the address in a browser **on the same machine**:
+the sign-in ends on a `127.0.0.1` address that only that machine can reach.
+A browser on Windows normally reaches a WSL 2 session this way (WSL forwards
+`localhost` by default). `ocd` starts the
+client only once the gateway has accepted the connection; otherwise it says
+what failed (sign-in not completed, not a member of the tenant, instance not
+reachable, route not published yet). The same applies to `ocd mssql` and to
+`ocd psql` through the gateway.
 
 ### `ocd ssh`
 
@@ -261,7 +298,9 @@ where it can:
 
 Set `browser:` in the config file or `OCD_BROWSER` to use another command
 (`{url}` is replaced by the address, otherwise appended). `none` only prints
-the address, as do `ocd login --no-browser` and `ocd psql --no-browser`.
+the address, as do `--no-browser` on `ocd login`, `ocd psql`, `ocd clickhouse`
+and `ocd mssql`. On macOS the access-gateway page is still opened by the
+system (`open`); its address is not printed.
 
 ## Troubleshooting
 
@@ -276,6 +315,11 @@ the address, as do `ocd login --no-browser` and `ocd psql --no-browser`.
 | `ocd psql`: no CA certificate | the portal did not publish one yet: download "TLS CA certificate" from the portal and pass `--ca <instance>-ca.crt` |
 | `ocd psql`: the stored CA is outdated | pass the new file explicitly with `--ca <file>`; a CA file in the current directory is never picked up on its own |
 | `ocd psql`: `role ... not permitted` / authentication failed | your account is not a member of the instance's tenant |
+| `ocd clickhouse` on Windows: `clickhouse-client not found on PATH` | ClickHouse has no native Windows client: run `ocd clickhouse` inside WSL 2, or use OneCloud Shell or the DBeaver OneCloud plugin (see [ClickHouse client](#clickhouse-client)) |
+| `ocd clickhouse`: `... is not the official ClickHouse client`, or `Authentication failed` with a client that is not the official one | the program found on `PATH` is another tool named `clickhouse-client` (for example `chcli`): remove it from `PATH` and install the official client |
+| `ocd clickhouse` / `ocd mssql`: `Connection reset by peer` right after "Connecting ... via the OneCloud access gateway" (ocd 0.5.5 or older) | the access-gateway sign-in page could not be opened (WSL, server): upgrade `ocd`, which prints the address and waits for the sign-in |
+| `access to ... was not authorized in time` | open the printed address in a browser on the same machine within five minutes, then run the command again |
+| `the OneCloud access gateway has no route to ... yet (404)` | the gateway does not know the instance: check in the portal that it is ready, then try again in a few minutes |
 | anything else | rerun with `-v` (and `OCD_LOG_LEVEL=debug` for tunnel logs), then `ocd doctor` |
 
 ## Develop
