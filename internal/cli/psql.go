@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/pomerium/cli/tunnel"
 	"github.com/spf13/cobra"
@@ -29,6 +30,19 @@ func caStore() (pgcmd.CAStore, error) {
 		return pgcmd.CAStore{}, err
 	}
 	return pgcmd.CAStore{Dir: filepath.Join(d, "postgres")}, nil
+}
+
+// connectedEvents records that the tunnel reached the instance, so a failure
+// before that point (gateway unreachable, 503, sign-in not completed) can be
+// told apart from a session that ended later.
+type connectedEvents struct {
+	tunnel.EventSink
+	up *atomic.Bool
+}
+
+func (c connectedEvents) OnConnected(ctx context.Context) {
+	c.up.Store(true)
+	c.EventSink.OnConnected(ctx)
 }
 
 // tunnelServer accepts local connections and carries each one through tun.
@@ -55,7 +69,14 @@ func (s *tunnelServer) serve(ctx context.Context) {
 		go func() {
 			defer s.wg.Done()
 			defer conn.Close()
-			_ = s.tun.Run(ctx, conn, quietEvents{tunnel.LogEvents()})
+			var up atomic.Bool
+			err := s.tun.Run(ctx, conn, quietEvents{connectedEvents{tunnel.LogEvents(), &up}})
+			// Closing conn with the client's first bytes still unread makes the
+			// client fail with only "connection reset by peer": say why here.
+			if err != nil && !up.Load() && ctx.Err() == nil && !isNormalClose(err) {
+				say("The access-gateway tunnel could not be opened: %v", err)
+				say("The client reports this as a reset or closed connection; run the command again (-v shows the gateway exchange)")
+			}
 		}()
 	}
 }
