@@ -55,3 +55,19 @@ func TestParseInstanceNeedsSlug(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+// UAT 2026-11 VM-SH-CLI-01 (OneCloud #2834): the VM SSH Service name the
+// portal shows as "SSH host".
+func TestSSHServiceName(t *testing.T) {
+	tg, err := Parse("uat-999002/uatvm02")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := tg.SSHServiceName(); got != "uatvm02-ssh.tenant-uat-999002-vm" {
+		t.Fatalf("service name %s", got)
+	}
+	bare, err := Parse("999002/uatvm02")
+	if err != nil || bare.SSHServiceName() != "" {
+		t.Fatalf("bare tenant id must not name a namespace: %q %v", bare.SSHServiceName(), err)
+	}
+}

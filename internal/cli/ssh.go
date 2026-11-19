@@ -31,7 +31,15 @@ func accountStore() (accounts.Store, error) {
 	return accounts.Store{Path: filepath.Join(d, "accounts.json")}, nil
 }
 
+// signIn is replaced in tests.
+var signIn = loginWithMode
+
+// sshPort is the VM SSH port. Tests substitute an ephemeral listener.
+var sshPort = 22
+
 // ensureLogin signs in again when the certificate is missing or expires soon.
+// OneCloud Shell has no local browser: the sign-in uses a device code there,
+// so ocd ssh stays one command (UAT 2026-11 VM-SH-CLI-01, OneCloud #2834).
 func ensureLogin(cl config.Cluster, keyPath string) error {
 	info, err := cert.ReadPair(keyPath)
 	switch {
@@ -50,7 +58,27 @@ func ensureLogin(cl config.Cluster, keyPath string) error {
 		debugf("no usable sign-in: %v", err)
 		say("You are not signed in yet")
 	}
-	return login(cl, false)
+	return signIn(cl, false, config.InCloudShell())
+}
+
+// shellSSHRoute picks the route of ocd ssh in OneCloud Shell when no usable
+// tenant-network address came from the portal. The Shell cannot sign in to
+// the access gateway (browser only) but sits in the tenant network: with
+// --via auto it reaches the VM SSH Service found in the cluster DNS. The
+// gateway refusal stays for a forced --via proxied and for a name that does
+// not answer. Outside the Shell the route is left as it is.
+func shellSSHRoute(via, path, address string, tg target.Target) (string, string, error) {
+	if path != "proxied" || nativePortalAvailable() {
+		return path, address, nil
+	}
+	if via == "auto" {
+		if name := tg.SSHServiceName(); name != "" {
+			if ip := shellServiceAddress(name, sshPort); ip != "" {
+				return "direct", ip, nil
+			}
+		}
+	}
+	return "", "", errCloudShellGateway
 }
 
 // join runs the onecloud-join step and returns the personal account name.
@@ -126,19 +154,19 @@ func newSSHCmd(cluster func() (config.Cluster, error), via *string) *cobra.Comma
 					if *via == "direct" {
 						return fmt.Errorf("cannot look up the tenant-network address: %w; use --address <ip> if you know it", lookupErr)
 					}
-					if errors.Is(lookupErr, errPortalNonInteractive) || errors.Is(lookupErr, errCloudShellPortal) {
+					if errors.Is(lookupErr, errPortalNonInteractive) {
 						say("No saved portal sign-in; skipping address lookup and using the OneCloud access gateway")
 					} else {
 						debugf("tenant-network address unavailable (%v); using gateway", lookupErr)
 					}
 				}
 			}
-			path, err := accessPath(*via, address, 22)
+			path, err := accessPath(*via, address, sshPort)
 			if err != nil {
 				return err
 			}
-			if path == "proxied" && !nativePortalAvailable() {
-				return errCloudShellGateway
+			if path, address, err = shellSSHRoute(*via, path, address, tg); err != nil {
+				return err
 			}
 			if err := ensureLogin(cl, keyPath); err != nil {
 				return err

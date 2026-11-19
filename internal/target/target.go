@@ -56,6 +56,16 @@ func (t Target) PostgresServerName() string {
 	return fmt.Sprintf("%s-pg-access.tenant-%s-%s-postgresql.svc", t.VM, t.Slug(), t.TenantID)
 }
 
+// SSHServiceName returns the cluster DNS name of the VM SSH Service, the
+// "SSH host" the portal shows: <vm>-ssh.tenant-<slug>-<id>-vm. It is empty
+// for a bare tenant id, which does not name the namespace.
+func (t Target) SSHServiceName() string {
+	if t.Slug() == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s-ssh.tenant-%s-%s-vm", t.VM, t.Slug(), t.TenantID)
+}
+
 func parse(s, want string) (Target, error) {
 	tenant, vm, ok := strings.Cut(s, "/")
 	if !ok || tenant == "" || vm == "" || strings.Contains(vm, "/") {

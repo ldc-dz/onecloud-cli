@@ -207,6 +207,14 @@ reachable, route not published yet). The same applies to `ocd mssql` and to
   host-key identity is used for both paths.
 - The access gateway asks you to sign in in the browser on the first proxied
   connection (the session is cached).
+- In OneCloud Shell `ocd ssh <tenant>/<vm>` is one command. Without a valid
+  SSH sign-in it starts the device sign-in itself: it prints a link and a
+  code, you confirm them in your browser, then it connects. It always goes
+  over the tenant network: to the address the portal publishes, otherwise to
+  the VM SSH Service `<vm>-ssh.tenant-<tenant>-vm` found in the cluster DNS
+  (write the full tenant name, e.g. `demo-000001`). The access gateway needs a
+  local browser, so `--via proxied` is refused there, as is a VM whose
+  Service does not answer.
 
 ### `ocd psql`
 
@@ -268,11 +276,12 @@ browser. The CLI uses an OAuth device grant against the configured issuer and
 binds the returned ID token to an opkssh SSH certificate, with a three-minute
 timeout. The OneCloud SSH Keycloak client **must enable the device authorization
 grant** before this succeeds (the CLI cannot enable it). `OCD_CLOUD_SHELL=1`
-fails fast for ordinary `ocd login` or expired SSH sign-ins rather than waiting
-for an unreachable callback; `ocd ssh --via direct --address <ip>` works with an
-existing valid certificate. Portal auto lookups in Cloud Shell use an existing
-saved token/address only; without one, they skip to the gateway. `psql` itself
-has the OAuth **device flow** available in the toolbox.
+fails fast for ordinary `ocd login` rather than waiting for an unreachable
+callback; `ocd ssh` starts the same device sign-in itself when the SSH
+sign-in is missing or expired. Portal auto lookups in Cloud Shell use an
+existing saved token/address only; without one, `ocd ssh` and `ocd psql`
+resolve the instance Service in the cluster DNS and connect directly. `psql`
+itself has the OAuth **device flow** available in the toolbox.
 
 **Callback workaround (only if your Keycloak client still lacks the SSH device
 grant):** In the same Cloud Shell tab run `OCD_CLOUD_SHELL=0 ocd login --no-browser`.
