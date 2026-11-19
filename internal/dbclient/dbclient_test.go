@@ -25,7 +25,25 @@ const testPassword = "native-client-test-secret-not-for-logs"
 func TestMain(m *testing.M) {
 	if os.Getenv("DBCLIENT_TEST_HELPER") == "1" {
 		args := os.Args[1:]
-		if len(args) == 1 && (args[0] == "--version" || args[0] == "-?") {
+		// The multi-call ClickHouse binary is started as `clickhouse client`.
+		if len(args) > 0 && args[0] == "client" && strings.HasPrefix(filepath.Base(os.Args[0]), "clickhouse") &&
+			!strings.HasPrefix(filepath.Base(os.Args[0]), "clickhouse-client") {
+			args = args[1:]
+		} else if os.Getenv("DBCLIENT_TEST_MULTICALL") == "1" {
+			_, _ = io.WriteString(os.Stderr, "multi-call binary started without its client argument\n")
+			os.Exit(64)
+		}
+		if len(args) == 1 && args[0] == "--version" {
+			banner := "ClickHouse client version 26.10.4.207 (official build)."
+			if v, ok := os.LookupEnv("DBCLIENT_TEST_VERSION"); ok {
+				banner = v
+			}
+			if banner != "" {
+				_, _ = io.WriteString(os.Stdout, banner+"\n")
+			}
+			os.Exit(0)
+		}
+		if len(args) == 1 && args[0] == "-?" {
 			_, _ = io.WriteString(os.Stdout, "native test client 1.2.3\n")
 			os.Exit(0)
 		}
@@ -55,6 +73,16 @@ type record struct {
 
 func fakeClient(t *testing.T, engine sqlcmd.Engine) string {
 	t.Helper()
+	list, err := candidates(engine)
+	if err != nil {
+		t.Fatal("invalid fake client engine")
+	}
+	return fakeClientNamed(t, list[0].name)
+}
+
+// fakeClientNamed installs the fake client under name as the only program on PATH.
+func fakeClientNamed(t *testing.T, name string) string {
+	t.Helper()
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatal("cannot locate test executable")
@@ -62,10 +90,6 @@ func fakeClient(t *testing.T, engine sqlcmd.Engine) string {
 	data, err := os.ReadFile(self)
 	if err != nil {
 		t.Fatal("cannot load test executable")
-	}
-	name, _, err := client(engine)
-	if err != nil {
-		t.Fatal("invalid fake client engine")
 	}
 	if runtime.GOOS == "windows" {
 		name += ".exe"
@@ -185,11 +209,15 @@ func TestDiscoverAndVersion(t *testing.T) {
 		t.Run(string(engine), func(t *testing.T) {
 			path := fakeClient(t, engine)
 			found, err := Discover(engine)
-			if err != nil || found != path {
+			if err != nil || found.Path != path || len(found.Prefix) != 0 {
 				t.Fatal("fake native client discovery failed")
 			}
+			want := "native test client 1.2.3"
+			if engine == sqlcmd.ClickHouseEngine {
+				want = "ClickHouse client version 26.10.4.207 (official build)."
+			}
 			version, err := Version(context.Background(), engine, found)
-			if err != nil || version != "native test client 1.2.3" {
+			if err != nil || version != want {
 				t.Fatal("fake native client version probe failed")
 			}
 		})
@@ -290,5 +318,169 @@ func TestConnectRequiresVisibleNoticeAndClosesOnFailures(t *testing.T) {
 				t.Fatal("connection failure left tunnel open")
 			}
 		})
+	}
+}
+
+// UAT 2026-11 CH-PORTAL-02: `curl https://clickhouse.com/ | sh` installs only
+// the multi-call binary, which is the ClickHouse client as `clickhouse client`.
+func TestDiscoverAcceptsMultiCallClickHouseBinary(t *testing.T) {
+	path := fakeClientNamed(t, "clickhouse")
+	t.Setenv("DBCLIENT_TEST_MULTICALL", "1")
+	found, err := Check(context.Background(), sqlcmd.ClickHouseEngine)
+	if err != nil {
+		t.Fatalf("the multi-call clickhouse binary was not accepted: %v", err)
+	}
+	if found.Path != path || !reflect.DeepEqual(found.Prefix, []string{"client"}) {
+		t.Fatalf("got %q with prefix %q, want %q started as `clickhouse client`", found.Path, found.Prefix, path)
+	}
+	tun := &fakeTunnel{port: 19777}
+	var out bytes.Buffer
+	err = Connect(context.Background(), sqlcmd.ClickHouseEngine,
+		sqlcmd.Options{User: "default", Password: testPassword, Extra: []string{"--query", "SELECT 1"}},
+		func(context.Context) (Tunnel, error) { return tun, nil }, Streams{Stdout: &out})
+	if err != nil {
+		t.Fatalf("connect through the multi-call binary: %v", err)
+	}
+	// The fake strips the leading "client" exactly as the real binary does.
+	got := readRecord(t, &out)
+	if !reflect.DeepEqual(got.Args, []string{"--host", "127.0.0.1", "--port", "19777", "--user", "default", "--query", "SELECT 1"}) {
+		t.Fatal("the multi-call binary did not get the managed arguments after `client`")
+	}
+}
+
+func TestDiscoverPrefersClickHouseClientOverMultiCall(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"clickhouse-client", "clickhouse"} {
+		if runtime.GOOS == "windows" {
+			name += ".exe"
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", dir)
+	found, err := Discover(sqlcmd.ClickHouseEngine)
+	if err != nil || !strings.HasPrefix(filepath.Base(found.Path), "clickhouse-client") || len(found.Prefix) != 0 {
+		t.Fatalf("got %+v, %v; want clickhouse-client with no prefix", found, err)
+	}
+}
+
+func TestIsClickHouseClient(t *testing.T) {
+	for banner, want := range map[string]bool{
+		// Official Linux and macOS builds, and the multi-call binary.
+		"ClickHouse client version 26.10.4.207 (official build).":  true,
+		"ClickHouse client version 24.5.1.117 (official build).\n": true,
+		// Altinity and distribution builds.
+		"ClickHouse client version 23.8.8.21.altinitystable (altinity build).": true,
+		"ClickHouse client version 18.16.1.":                                   true,
+		"ClickHouse client version 22.2.2.1.\r\n":                              true,
+		// Not the client: the third-party client of the UAT, other programs
+		// of the same family, an error text, nothing.
+		"chcli 0.2.0": false,
+		"ClickHouse local version 26.10.4.207 (official build).":  false,
+		"ClickHouse server version 26.10.4.207 (official build).": false,
+		"clickhouse-cli, version 0.3.9":                           false,
+		"ClickHouse client version unknown":                       false,
+		"usage: clickhouse client version --help":                 false,
+		"error: ClickHouse client version 1.2 missing":            false,
+		"": false,
+	} {
+		if got := IsClickHouseClient(banner); got != want {
+			t.Errorf("IsClickHouseClient(%q) = %v, want %v", banner, got, want)
+		}
+	}
+}
+
+// UAT 2026-11 CH-PORTAL-02 (Windows): a third-party client put on PATH as
+// clickhouse-client ignored CLICKHOUSE_PASSWORD and the server answered
+// "Authentication failed". It must be refused before any tunnel is opened.
+func TestCheckRejectsNonOfficialClickHouseClient(t *testing.T) {
+	for _, banner := range []string{"chcli 0.2.0", ""} {
+		t.Run("banner="+banner, func(t *testing.T) {
+			path := fakeClient(t, sqlcmd.ClickHouseEngine)
+			t.Setenv("DBCLIENT_TEST_VERSION", banner)
+			_, err := Check(context.Background(), sqlcmd.ClickHouseEngine)
+			var wrong *WrongClientError
+			if !errors.As(err, &wrong) {
+				t.Fatalf("a program that is not the ClickHouse client was accepted: %v", err)
+			}
+			if !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), "not the official ClickHouse client") {
+				t.Fatalf("the message must name the program found: %v", err)
+			}
+			if banner != "" && !strings.Contains(err.Error(), banner) {
+				t.Fatalf("the message must quote what the program printed: %v", err)
+			}
+			opened := false
+			err = Connect(context.Background(), sqlcmd.ClickHouseEngine, sqlcmd.Options{User: "default", Password: testPassword},
+				func(context.Context) (Tunnel, error) { opened = true; return &fakeTunnel{port: 1}, nil }, Streams{})
+			if !errors.As(err, &wrong) || opened {
+				t.Fatal("a non official client must stop the connection before the tunnel opens")
+			}
+			if strings.Contains(err.Error(), testPassword) {
+				t.Fatal("the refusal leaked the password")
+			}
+		})
+	}
+}
+
+func TestCheckDoesNotProbeSQLCmdIdentity(t *testing.T) {
+	path := fakeClient(t, sqlcmd.MSSQLEngine)
+	found, err := Check(context.Background(), sqlcmd.MSSQLEngine)
+	if err != nil || found.Path != path {
+		t.Fatalf("sqlcmd check: %+v, %v", found, err)
+	}
+}
+
+// UAT 2026-11 CH-ANY-CLI-03: the guidance depends on the OS, and on Windows
+// it must not send the user to a client that does not exist.
+func TestMissingClickHouseClientMessagePerOS(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	for goos, want := range map[string][]string{
+		"windows": {"no native Windows client", "WSL 2", "OneCloud Shell", "DBeaver", "curl https://clickhouse.com/ | sh"},
+		"linux":   {"curl https://clickhouse.com/ | sh", "clickhouse client", "clickhouse-client package", "https://clickhouse.com/docs/install"},
+		"darwin":  {"curl https://clickhouse.com/ | sh", "clickhouse client", "https://clickhouse.com/docs/install"},
+	} {
+		t.Run(goos, func(t *testing.T) {
+			old := hostOS
+			hostOS = goos
+			t.Cleanup(func() { hostOS = old })
+			_, err := Check(context.Background(), sqlcmd.ClickHouseEngine)
+			var missing *MissingClientError
+			if !errors.As(err, &missing) {
+				t.Fatalf("want a missing client error, got %v", err)
+			}
+			if !strings.HasPrefix(err.Error(), "clickhouse-client not found on PATH: ") {
+				t.Fatalf("message must start with what is missing: %v", err)
+			}
+			for _, w := range want {
+				if !strings.Contains(err.Error(), w) {
+					t.Errorf("%s message lacks %q: %v", goos, w, err)
+				}
+			}
+			if goos == "windows" && strings.Contains(err.Error(), "install the ClickHouse native client") {
+				t.Errorf("the Windows message still asks for a native client: %v", err)
+			}
+			if goos != "windows" && (strings.Contains(err.Error(), "WSL") || strings.Contains(err.Error(), "Windows")) {
+				t.Errorf("%s message talks about Windows: %v", goos, err)
+			}
+			if strings.ContainsAny(err.Error(), "\u2013\u2014") {
+				t.Errorf("dash in message: %v", err)
+			}
+		})
+	}
+	if hint := InstallHint(sqlcmd.MSSQLEngine, "windows"); !strings.Contains(hint, "sqlcmd") || strings.Contains(hint, "ClickHouse") {
+		t.Fatalf("sqlcmd guidance changed: %s", hint)
+	}
+}
+
+func TestWrongClientMessageGivesWindowsRoute(t *testing.T) {
+	path := fakeClient(t, sqlcmd.ClickHouseEngine)
+	t.Setenv("DBCLIENT_TEST_VERSION", "chcli 0.2.0")
+	old := hostOS
+	hostOS = "windows"
+	t.Cleanup(func() { hostOS = old })
+	_, err := Check(context.Background(), sqlcmd.ClickHouseEngine)
+	if err == nil || !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), "WSL 2") || !strings.Contains(err.Error(), `"chcli 0.2.0"`) {
+		t.Fatalf("got %v", err)
 	}
 }

@@ -16,6 +16,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/ldc-dz/onecloud-cli/internal/browser"
 	"github.com/ldc-dz/onecloud-cli/internal/config"
 	"github.com/ldc-dz/onecloud-cli/internal/dbclient"
 	"github.com/ldc-dz/onecloud-cli/internal/portal"
@@ -176,20 +177,6 @@ func splitTarget(cmd *cobra.Command, args []string) (string, []string) {
 	return args[0], extra
 }
 
-// gatewayTunnel is a loopback listener carried by the access gateway.
-type gatewayTunnel struct {
-	srv     *tunnelServer
-	cancel  context.CancelFunc
-	restore func()
-}
-
-func (g gatewayTunnel) Port() int { return g.srv.Port() }
-func (g gatewayTunnel) Close() error {
-	g.restore()
-	g.cancel()
-	return nil
-}
-
 // sqlEngine describes one native SQL command.
 type sqlEngine struct {
 	use, short, route, defaultDB, defaultUser string
@@ -200,6 +187,7 @@ type sqlEngine struct {
 
 func newSQLCmd(cluster func() (config.Cluster, error), s sqlEngine) *cobra.Command {
 	var dbname, user string
+	var noBrowser bool
 	cmd := &cobra.Command{
 		Use:     s.use + " [<tenant>/<instance>] [-- client arguments...]",
 		Aliases: s.aliases,
@@ -215,8 +203,16 @@ func newSQLCmd(cluster func() (config.Cluster, error), s sqlEngine) *cobra.Comma
 				return err
 			}
 			typed, extra := splitTarget(c, args)
-			if _, err := dbclient.Discover(s.engine); err != nil {
+			// Before any sign-in or password reveal: the native client must
+			// be there and be the real one (a look-alike ignores the
+			// password ocd passes and fails with a misleading database
+			// error; UAT 2026-11 CH-PORTAL-02).
+			if _, err := dbclient.Check(context.Background(), s.engine); err != nil {
 				return err
+			}
+			if noBrowser {
+				// Portal and access-gateway sign-in pages are only printed.
+				_ = os.Setenv(browser.EnvCommand, "none")
 			}
 			ctx, stop := context.WithTimeout(context.Background(), 5*time.Minute)
 			sess, e, err := pickService(ctx, cl, typed, s.use, s.kind)
@@ -257,18 +253,11 @@ func newSQLCmd(cluster func() (config.Cluster, error), s sqlEngine) *cobra.Comma
 				if endpoint != "" {
 					return openDirect(ctx, endpoint)
 				}
-				setupTunnelLogging()
-				tun, dst, err := newTunnel(host+":443", cl.PomeriumURL, "")
+				gw, err := openGatewayTunnel(e.Target(), host, cl.PomeriumURL, 0, noBrowser)
 				if err != nil {
 					return nil, err
 				}
-				tctx, cancel := context.WithCancel(context.Background())
-				srv, err := startTunnel(tctx, tun, 0)
-				if err != nil {
-					cancel()
-					return nil, err
-				}
-				return gatewayTunnel{srv: srv, cancel: cancel, restore: filterPomeriumNotice(dst)}, nil
+				return gw, nil
 			}
 			if endpoint != "" {
 				say("Connecting to %s directly over your tenant network", e.Target())
@@ -301,12 +290,13 @@ func newSQLCmd(cluster func() (config.Cluster, error), s sqlEngine) *cobra.Comma
 	f.SetInterspersed(false)
 	f.StringVarP(&dbname, "dbname", "d", "", "database name (default: "+map[bool]string{true: "the server default", false: s.defaultDB}[s.defaultDB == ""]+")")
 	f.StringVarP(&user, "username", "U", "", "database user (default: the one published by the portal)")
+	f.BoolVar(&noBrowser, "no-browser", false, "do not open the sign-in pages; only print their addresses")
 	return cmd
 }
 
 func newClickHouseCmd(cluster func() (config.Cluster, error)) *cobra.Command {
 	return newSQLCmd(cluster, sqlEngine{
-		use: "clickhouse", aliases: []string{"ch"}, short: "Connect clickhouse-client to a tenant managed ClickHouse",
+		use: "clickhouse", aliases: []string{"ch"}, short: "Connect the ClickHouse client to a tenant managed ClickHouse",
 		route: "ch", defaultUser: "default", kind: services.ClickHouse, engine: sqlcmd.ClickHouseEngine,
 	})
 }
