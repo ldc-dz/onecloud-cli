@@ -88,8 +88,8 @@ or `000001`; `ocd psql` needs the full tenant name.
 | `ocd ssh <tenant>/<vm> [-- cmd]` | SSH directly over VPC when reachable or via gateway; refreshes expired certificate |
 | `ocd psql <tenant>/<instance> [-- psql args]` | psql directly or via gateway with OAuth sign-in and `verify-full` TLS |
 | `ocd tunnel <host:port>` | raw access-gateway TCP tunnel (used by proxied `ocd ssh` as ProxyCommand) |
-| `ocd clickhouse` (`ch`) `[<tenant>/<instance>] [-- args]` | the ClickHouse client through the access gateway, password from the portal (see [ClickHouse client](#clickhouse-client)) |
-| `ocd mssql [<tenant>/<instance>] [-- args]` | `sqlcmd` through the access gateway, password from the portal |
+| `ocd clickhouse` (`ch`) `[<tenant>/<instance>] [-- args]` | the ClickHouse client directly over the tenant network (native port 9000) when reachable, else through the access gateway; password from the portal (see [ClickHouse client](#clickhouse-client)) |
+| `ocd mssql [<tenant>/<instance>] [-- args]` | `sqlcmd` directly over the tenant network (port 1433) when reachable, else through the access gateway; password from the portal |
 | `ocd s3 ls\|get\|put\|rm [<tenant>/<instance>]` | objects of a managed object-storage instance |
 | `ocd services [--json] [--type t] [--tenant t]` | list the services you can reach and their status |
 | `ocd connect [<tenant>/<instance>]` | choose a service with the arrow keys and connect to it |
@@ -98,12 +98,17 @@ or `000001`; `ocd psql` needs the full tenant name.
 | `ocd version` | version and embedded opkssh version |
 
 Global flags: `--cluster <name>`, `--via auto|direct|proxied` (default `auto`
-for SSH and psql), `-v/--verbose`. Run `ocd <command> --help` for every flag.
+for SSH, psql, mssql and clickhouse), `-v/--verbose`. Run `ocd <command> --help` for every flag.
 
 `auto` reads the instance's `vpcAddress` from the portal's
 `GET /api/provisioning/connections` inventory. For VM instances not yet in
 that inventory it falls back to the portal's tenant-scoped public
-`GET /api/provisioning/instances` facade output `vpc.address`. The first
+`GET /api/provisioning/instances` facade output `vpc.address`. `ocd mssql`
+and `ocd clickhouse` use the same inventory (engines `mssql` and `clickhouse`,
+ports 1433 and 9000); the direct path keeps the gateway path's client options
+(`sqlcmd -C`, ClickHouse native protocol) and the password stays in the client
+environment, never on the command line. `-v` prints the address chosen and why
+the gateway was used instead. The first
 interactive lookup prompts once; the portal bearer is cached under the ocd
 config directory in a 0600 file, bound to the issuer/client/portal and expired
 before its JWT `exp`. Validated private IPv4 addresses (RFC1918 or 100.64/10)

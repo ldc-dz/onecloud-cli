@@ -16,15 +16,16 @@ import (
 // CH-ANY-CLI-03, Windows runner: "production issuer discovery: ...").
 func TestSQLCommandsCheckTheClientBeforeResolvingTheCluster(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
-	for name, newCmd := range map[string]func(func() (config.Cluster, error)) *cobra.Command{
+	for name, newCmd := range map[string]func(func() (config.Cluster, error), *string) *cobra.Command{
 		"clickhouse": newClickHouseCmd,
 		"mssql":      newMSSQLCmd,
 	} {
 		resolved := false
+		via := "auto"
 		cmd := newCmd(func() (config.Cluster, error) {
 			resolved = true
 			return config.Cluster{}, errors.New("production issuer discovery: network down")
-		})
+		}, &via)
 		cmd.SetArgs([]string{"demo-000001/db01"})
 		cmd.SilenceUsage, cmd.SilenceErrors = true, true
 		err := cmd.Execute()

@@ -9,8 +9,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
+	"strconv"
 	"text/tabwriter"
 	"time"
 
@@ -177,22 +179,59 @@ func splitTarget(cmd *cobra.Command, args []string) (string, []string) {
 	return args[0], extra
 }
 
-// sqlEngine describes one native SQL command.
+// sqlEngine describes one native SQL command. inventory is the engine name
+// of the portal connections inventory (the one ocd psql reads).
 type sqlEngine struct {
-	use, short, route, defaultDB, defaultUser string
-	aliases                                   []string
-	kind                                      services.Kind
-	engine                                    sqlcmd.Engine
+	use, short, route, defaultDB, defaultUser, inventory string
+	aliases                                              []string
+	kind                                                 services.Kind
+	engine                                               sqlcmd.Engine
 }
 
-func newSQLCmd(cluster func() (config.Cluster, error), s sqlEngine) *cobra.Command {
+// directSQLPorts are the tenant-network ports the native clients speak to
+// (SQL Server TDS, ClickHouse native). Tests substitute ephemeral listeners.
+var directSQLPorts = map[string]int{"mssql": 1433, "clickhouse": 9000}
+
+// sqlDirectEndpoint picks the path of ocd mssql / ocd clickhouse outside
+// OneCloud Shell, like ocd psql: the tenant-network (VPC) address published
+// in the portal connections inventory when --via allows it and, in auto
+// mode, when it accepts TCP; otherwise the access gateway (empty endpoint).
+func sqlDirectEndpoint(cl config.Cluster, s sqlEngine, via, tenant, instance string) (string, error) {
+	if via == "proxied" {
+		return "", nil
+	}
+	port := directSQLPorts[s.inventory]
+	address, _, err := portalVPC(cl, s.inventory, tenant, instance, false, via == "direct")
+	if err != nil {
+		if via == "direct" {
+			return "", fmt.Errorf("cannot look up the tenant-network address: %w", err)
+		}
+		debugf("no tenant-network address for %s/%s (%v); using the access gateway", tenant, instance, err)
+		return "", nil
+	}
+	path, err := accessPath(via, address, port)
+	if err != nil {
+		return "", err
+	}
+	if path != "direct" {
+		debugf("tenant-network address %s:%d not reachable; using the access gateway", address, port)
+		return "", nil
+	}
+	debugf("tenant-network address %s:%d from the portal inventory", address, port)
+	return net.JoinHostPort(address, strconv.Itoa(port)), nil
+}
+
+func newSQLCmd(cluster func() (config.Cluster, error), via *string, s sqlEngine) *cobra.Command {
 	var dbname, user string
 	var noBrowser bool
 	cmd := &cobra.Command{
 		Use:     s.use + " [<tenant>/<instance>] [-- client arguments...]",
 		Aliases: s.aliases,
 		Short:   s.short,
-		Long: s.short + " through the OneCloud access gateway.\n" +
+		Long: s.short + " directly over your tenant network when the portal\n" +
+			"publishes a tenant-network address that answers (VPN), otherwise through the\n" +
+			"OneCloud access gateway. --via auto (default), direct or proxied forces the path;\n" +
+			"-v prints which address was chosen and why.\n" +
 			"Without a target, ocd lists your instances and lets you choose one.\n" +
 			"The database password is read from the portal for this session only and is\n" +
 			"given to the client through its environment, never on the command line.",
@@ -251,6 +290,10 @@ func newSQLCmd(cluster func() (config.Cluster, error), s sqlEngine) *cobra.Comma
 				if endpoint, err = tenantEndpoint(e); err != nil {
 					return err
 				}
+			} else if endpoint, err = sqlDirectEndpoint(cl, s, *via, tg.Tenant, tg.VM); err != nil {
+				// UAT 2026-11 VPN-MS-01 / VPN-CH-01 (OneCloud #2638): a VPN
+				// client reaches the published tenant-network address.
+				return err
 			}
 			open := func(ctx context.Context) (dbclient.Tunnel, error) {
 				if endpoint != "" {
@@ -297,17 +340,17 @@ func newSQLCmd(cluster func() (config.Cluster, error), s sqlEngine) *cobra.Comma
 	return cmd
 }
 
-func newClickHouseCmd(cluster func() (config.Cluster, error)) *cobra.Command {
-	return newSQLCmd(cluster, sqlEngine{
+func newClickHouseCmd(cluster func() (config.Cluster, error), via *string) *cobra.Command {
+	return newSQLCmd(cluster, via, sqlEngine{
 		use: "clickhouse", aliases: []string{"ch"}, short: "Connect the ClickHouse client to a tenant managed ClickHouse",
-		route: "ch", defaultUser: "default", kind: services.ClickHouse, engine: sqlcmd.ClickHouseEngine,
+		route: "ch", defaultUser: "default", inventory: "clickhouse", kind: services.ClickHouse, engine: sqlcmd.ClickHouseEngine,
 	})
 }
 
-func newMSSQLCmd(cluster func() (config.Cluster, error)) *cobra.Command {
-	return newSQLCmd(cluster, sqlEngine{
+func newMSSQLCmd(cluster func() (config.Cluster, error), via *string) *cobra.Command {
+	return newSQLCmd(cluster, via, sqlEngine{
 		use: "mssql", aliases: []string{"sqlserver"}, short: "Connect sqlcmd to a tenant managed SQL Server",
-		route: "mssql", defaultDB: "master", defaultUser: "sa", kind: services.MSSQL, engine: sqlcmd.MSSQLEngine,
+		route: "mssql", defaultDB: "master", defaultUser: "sa", inventory: "mssql", kind: services.MSSQL, engine: sqlcmd.MSSQLEngine,
 	})
 }
 
