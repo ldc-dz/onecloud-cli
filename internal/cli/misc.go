@@ -17,7 +17,9 @@ import (
 
 	"github.com/ldc-dz/onecloud-cli/internal/cert"
 	"github.com/ldc-dz/onecloud-cli/internal/config"
+	"github.com/ldc-dz/onecloud-cli/internal/dbclient"
 	"github.com/ldc-dz/onecloud-cli/internal/pgcmd"
+	"github.com/ldc-dz/onecloud-cli/internal/sqlcmd"
 )
 
 // doctor must stay fast even when the portal is slow, so the saved-session
@@ -157,11 +159,16 @@ func newDoctorCmd(cluster func() (config.Cluster, error)) *cobra.Command {
 				}
 				ok("sqlcmd %s (%s)", p, firstLine(string(out)))
 			}
-			if p, err := exec.LookPath("clickhouse-client"); err != nil {
-				note("clickhouse-client not found on PATH (only needed for ocd clickhouse)")
+			// The same check as ocd clickhouse: clickhouse-client or the
+			// multi-call `clickhouse client`, and really the ClickHouse client.
+			var missing *dbclient.MissingClientError
+			if native, err := dbclient.Check(context.Background(), sqlcmd.ClickHouseEngine); errors.As(err, &missing) {
+				note("ClickHouse client not found on PATH (only needed for ocd clickhouse)")
+			} else if err != nil {
+				note("%v (only needed for ocd clickhouse)", err)
 			} else {
-				out, _ := exec.Command(p, "--version").CombinedOutput()
-				ok("clickhouse-client %s (%s)", p, firstLine(string(out)))
+				version, _ := dbclient.Version(context.Background(), sqlcmd.ClickHouseEngine, native)
+				ok("clickhouse-client %s (%s)", strings.Join(append([]string{native.Path}, native.Prefix...), " "), firstLine(version))
 			}
 			if err := cl.SSHAvailable(); err != nil {
 				note("%v", err)
