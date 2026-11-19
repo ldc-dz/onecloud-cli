@@ -47,7 +47,7 @@ func newRoot(resolve func(config.Config, context.Context, string) (config.Cluste
 		SilenceErrors: true,
 	}
 	root.PersistentFlags().StringVar(&cluster, "cluster", "", "OneCloud cluster: ocd-prd-01 (default) or ocd-dev-01")
-	root.PersistentFlags().StringVar(&via, "via", "auto", "access path for ssh/psql: auto, direct, or proxied")
+	root.PersistentFlags().StringVar(&via, "via", "auto", "access path for ssh/psql/mssql/clickhouse: auto, direct, or proxied")
 	root.PersistentFlags().BoolVarP(&verboseFlag, "verbose", "v", false, "show details (identity, key paths, library messages)")
 	root.PersistentPreRunE = func(*cobra.Command, []string) error {
 		if err := validateVia(via); err != nil {
@@ -70,8 +70,8 @@ func newRoot(resolve func(config.Config, context.Context, string) (config.Cluste
 		newLoginCmd(clusterFn),
 		newSSHCmd(clusterFn, &via),
 		newPsqlCmd(clusterFn, &via),
-		newClickHouseCmd(clusterFn),
-		newMSSQLCmd(clusterFn),
+		newClickHouseCmd(clusterFn, &via),
+		newMSSQLCmd(clusterFn, &via),
 		newS3Cmd(clusterFn),
 		newServicesCmd(clusterFn),
 		newConnectCmd(clusterFn),
