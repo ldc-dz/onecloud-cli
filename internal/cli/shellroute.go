@@ -11,6 +11,9 @@ var lookupHost = func(ctx context.Context, host string) ([]string, error) {
 	return net.DefaultResolver.LookupHost(ctx, host)
 }
 
+// probeService is replaced in tests.
+var probeService = probeTCP
+
 // shellServiceAddress resolves the instance service name in the cluster DNS
 // of OneCloud Shell and returns its private IPv4 when the port answers, or ""
 // so the caller keeps its normal path. TLS still verifies the certificate
@@ -28,7 +31,7 @@ func shellServiceAddress(name string, port int) string {
 		if ip == nil || ip.To4() == nil || !ip.IsPrivate() {
 			continue
 		}
-		if probeTCP(a, port) {
+		if probeService(a, port) {
 			return a
 		}
 	}
