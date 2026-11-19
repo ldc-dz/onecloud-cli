@@ -6,6 +6,14 @@
 #   gh workflow run windows-acceptance.yml -R ldc-dz/onecloud-cli \
 #     -f ocd_version=v0.5.5 -f command='ocd doctor'
 #
+# With clickhouse_target=<tenant>/<instance> it also runs the `ocd clickhouse`
+# checks of UAT case CH-ANY-CLI-03: the Windows route is printed when no
+# ClickHouse client is on PATH, also when the network is cut; a program that
+# only has the client's name is refused; with a client present and nobody to
+# sign in, ocd stops with an error instead of waiting. The client used there
+# is a stand-in that only prints a version banner: ClickHouse publishes no
+# Windows client, and no query is sent to any instance.
+#
 # The logs of a public repository are public: pass only commands whose output
 # may be published.
 name: windows-acceptance
@@ -23,6 +31,10 @@ on:
         default: main
       command:
         description: Optional command line run after the install; its output and exit code are printed, it never signs in
+        required: false
+        default: ""
+      clickhouse_target:
+        description: Optional <tenant>/<instance> for the ocd clickhouse checks (client missing, network cut, wrong client, no sign-in possible); it never signs in
         required: false
         default: ""
 
@@ -44,6 +56,7 @@ jobs:
       OCD_VERSION: ${{ inputs.ocd_version }}
       OCD_COMMAND: ${{ inputs.command }}
       INSTALL_REF: ${{ inputs.install_ref }}
+      CH_TARGET: ${{ inputs.clickhouse_target }}
     steps:
       - name: Machine and GitHub login state
         run: |
@@ -88,4 +101,80 @@ jobs:
           # No terminal and no stdin: a command that wants to sign in cannot wait for one.
           $null | & cmd.exe /d /c "$env:OCD_COMMAND 2>&1"
           Write-Host "exit=$LASTEXITCODE"
+          exit 0
+
+      - name: ocd clickhouse on Windows (UAT CH-ANY-CLI-03)
+        if: ${{ inputs.clickhouse_target != '' }}
+        # A sign-in that waits for a browser lasts five minutes: it must not happen here.
+        timeout-minutes: 4
+        run: |
+          if ($env:CH_TARGET -notmatch '^[a-z0-9][a-z0-9-]*/[a-z0-9][a-z0-9-]*$') { throw 'unexpected clickhouse_target' }
+          $ErrorActionPreference = 'Continue'
+          $base = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [Environment]::GetEnvironmentVariable('Path', 'User')
+          $env:Path = $base
+          & ocd version
+          $route = 'ClickHouse publishes no native Windows client'
+
+          # No terminal and no stdin, as in the requested command step.
+          function Invoke-Ocd([string]$line) {
+            $watch = [Diagnostics.Stopwatch]::StartNew()
+            $text = ($null | & cmd.exe /d /c "$line 2>&1" | Out-String).Trim()
+            $code = $LASTEXITCODE
+            Write-Host "> $line"
+            Write-Host $text
+            Write-Host "exit=$code after $([int]$watch.Elapsed.TotalSeconds)s"
+            return @{ Text = $text; Code = $code; Seconds = $watch.Elapsed.TotalSeconds }
+          }
+          function Assert-Route($r, [string]$what) {
+            if ($r.Code -ne 1) { throw "${what}: exit code $($r.Code), expected 1" }
+            foreach ($part in 'clickhouse-client not found on PATH', $route, 'WSL 2', 'OneCloud Shell', 'DBeaver') {
+              if (-not $r.Text.Contains($part)) { throw "${what}: the message lacks '$part'" }
+            }
+            if ($r.Text -match 'issuer discovery|sign in|Open this address') { throw "${what}: ocd went to the network before checking the client" }
+          }
+          function New-Client([string]$dir, [string]$banner) {
+            New-Item -ItemType Directory -Force -Path $dir | Out-Null
+            Set-Content -Path (Join-Path $dir 'clickhouse-client.cmd') -Encoding ascii -Value "@echo $banner"
+          }
+
+          Write-Host '== 1. No ClickHouse client on PATH: the Windows route, five times, both command names'
+          if (Get-Command clickhouse, clickhouse-client -ErrorAction SilentlyContinue) { throw 'a ClickHouse client is already on PATH' }
+          foreach ($i in 1..5) {
+            $name = if ($i % 2) { 'ch' } else { 'clickhouse' }
+            Assert-Route (Invoke-Ocd "ocd $name $env:CH_TARGET") "run $i"
+          }
+
+          Write-Host '== 2. A program named clickhouse-client that is not the ClickHouse client: refused before any sign-in'
+          New-Client "$env:RUNNER_TEMP\ch-wrong" 'chcli 0.1.0'
+          $env:Path = "$env:RUNNER_TEMP\ch-wrong;$base"
+          $r = Invoke-Ocd "ocd ch $env:CH_TARGET"
+          if ($r.Code -ne 1 -or -not $r.Text.Contains('is not the official ClickHouse client') -or -not $r.Text.Contains($route)) { throw 'the wrong client was not refused with the Windows route' }
+          if ($r.Text -match 'issuer discovery|sign in|Open this address') { throw 'ocd went to the network before refusing the wrong client' }
+
+          Write-Host '== 3. A client present (stand-in printing the version banner), nobody to sign in: an error, no wait'
+          New-Client "$env:RUNNER_TEMP\ch-standin" 'ClickHouse client version 26.3.1.1 (official build).'
+          $env:Path = "$env:RUNNER_TEMP\ch-standin;$base"
+          # The runner's own network sometimes drops the first request: that is not the case under test.
+          foreach ($try in 1..3) {
+            $r = Invoke-Ocd "ocd ch $env:CH_TARGET"
+            if ($r.Text -notmatch 'issuer discovery') { break }
+            Start-Sleep -Seconds 5
+          }
+          if ($r.Code -eq 0) { throw 'ocd exited 0 without any sign-in' }
+          if ($r.Text.Contains('not found on PATH') -or $r.Text.Contains('is not the official')) { throw 'the stand-in client was not accepted' }
+          if (-not $r.Text.Contains('no saved portal session')) { throw 'the error does not say that no sign-in is possible here' }
+          if ($r.Seconds -gt 60) { throw "ocd waited $([int]$r.Seconds)s although nobody can sign in" }
+
+          Write-Host '== 4. Network cut (proxy that refuses every connection)'
+          $env:HTTPS_PROXY = 'http://127.0.0.1:9'
+          $env:HTTP_PROXY = 'http://127.0.0.1:9'
+          $env:NO_PROXY = ''
+          Write-Host '-- control, client present: ocd needs the network and must fail on it'
+          $r = Invoke-Ocd "ocd ch $env:CH_TARGET"
+          if ($r.Code -eq 0 -or $r.Text -notmatch 'issuer discovery.*proxyconnect') { throw 'the network cut is not effective, the next check would prove nothing' }
+          Write-Host '-- client missing: the route must still be printed'
+          $env:Path = $base
+          foreach ($i in 1..3) { Assert-Route (Invoke-Ocd "ocd ch $env:CH_TARGET") "network cut, run $i" }
+
+          Write-Host 'ocd clickhouse checks passed'
           exit 0
