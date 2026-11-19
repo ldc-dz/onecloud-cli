@@ -1,0 +1,84 @@
+# Manual acceptance run of the documented Windows install route on a real
+# Windows machine (GitHub-hosted windows-latest), in Windows PowerShell 5.1 and
+# in PowerShell 7. It never runs on push or pull request, uses no secret and no
+# GitHub token, and does not sign in to any OneCloud cluster.
+#
+#   gh workflow run windows-acceptance.yml -R ldc-dz/onecloud-cli \
+#     -f ocd_version=v0.5.5 -f command='ocd doctor'
+#
+# The logs of a public repository are public: pass only commands whose output
+# may be published.
+name: windows-acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      ocd_version:
+        description: Release to install, e.g. v0.5.5 (empty = latest stable, as in the docs)
+        required: false
+        default: ""
+      command:
+        description: Optional command line run after the install; its output and exit code are printed, it never signs in
+        required: false
+        default: ""
+
+permissions: {}
+
+jobs:
+  install:
+    name: install (${{ matrix.shell }})
+    runs-on: windows-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shell: [powershell, pwsh]
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    env:
+      OCD_VERSION: ${{ inputs.ocd_version }}
+      OCD_COMMAND: ${{ inputs.command }}
+    steps:
+      - name: Machine and GitHub login state
+        run: |
+          $os = Get-CimInstance Win32_OperatingSystem
+          Write-Host "OS: $($os.Caption) $($os.Version) $env:PROCESSOR_ARCHITECTURE"
+          Write-Host "PowerShell: $($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion)"
+          Write-Host "GITHUB_TOKEN set: $([bool]$env:GITHUB_TOKEN); GH_TOKEN set: $([bool]$env:GH_TOKEN)"
+          $ErrorActionPreference = 'Continue'
+          & gh auth status *> $null
+          Write-Host "gh signed in: $($LASTEXITCODE -eq 0)"
+          if ($env:GITHUB_TOKEN -or $env:GH_TOKEN -or $LASTEXITCODE -eq 0) { throw 'this run must have no GitHub login' }
+          if (Get-Command ocd -ErrorAction SilentlyContinue) { throw 'ocd is already installed on this machine' }
+          exit 0
+
+      - name: Install ocd with the documented command
+        run: |
+          irm https://raw.githubusercontent.com/ldc-dz/onecloud-cli/main/install.ps1 | iex
+
+      - name: Run ocd from a new shell
+        run: |
+          # A new terminal builds PATH from the machine and user values; the
+          # runner keeps the one it started with, so rebuild it the same way.
+          $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [Environment]::GetEnvironmentVariable('Path', 'User')
+          $ocd = Get-Command ocd -ErrorAction Stop
+          Write-Host "ocd found on PATH: $($ocd.Source)"
+          & ocd version
+          if ($LASTEXITCODE -ne 0) { throw "ocd version exited $LASTEXITCODE" }
+          if ($env:OCD_VERSION) {
+            $want = $env:OCD_VERSION.TrimStart('v')
+            if (-not ((& ocd version | Out-String) -match [regex]::Escape($want))) { throw "installed version is not $want" }
+          }
+
+      - name: Run the requested command
+        if: ${{ inputs.command != '' }}
+        run: |
+          $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [Environment]::GetEnvironmentVariable('Path', 'User')
+          Write-Host "clickhouse on PATH: $([bool](Get-Command clickhouse, clickhouse-client -ErrorAction SilentlyContinue))"
+          Write-Host "> $env:OCD_COMMAND"
+          $ErrorActionPreference = 'Continue'
+          # No terminal and no stdin: a command that wants to sign in cannot wait for one.
+          $null | & cmd.exe /d /c "$env:OCD_COMMAND 2>&1"
+          Write-Host "exit=$LASTEXITCODE"
+          exit 0
