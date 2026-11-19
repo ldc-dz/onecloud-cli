@@ -198,18 +198,21 @@ func newSQLCmd(cluster func() (config.Cluster, error), s sqlEngine) *cobra.Comma
 			"given to the client through its environment, never on the command line.",
 		Args: cobra.ArbitraryArgs,
 		RunE: func(c *cobra.Command, args []string) error {
+			// Before any network call, sign-in or password reveal: the native
+			// client must be there and be the real one (a look-alike ignores
+			// the password ocd passes and fails with a misleading database
+			// error; UAT 2026-11 CH-PORTAL-02). Resolving the cluster reads
+			// the production issuer over the network: a machine without the
+			// client must get the install route, not a network error
+			// (UAT 2026-11 CH-ANY-CLI-03).
+			if _, err := dbclient.Check(context.Background(), s.engine); err != nil {
+				return err
+			}
 			cl, err := cluster()
 			if err != nil {
 				return err
 			}
 			typed, extra := splitTarget(c, args)
-			// Before any sign-in or password reveal: the native client must
-			// be there and be the real one (a look-alike ignores the
-			// password ocd passes and fails with a misleading database
-			// error; UAT 2026-11 CH-PORTAL-02).
-			if _, err := dbclient.Check(context.Background(), s.engine); err != nil {
-				return err
-			}
 			if noBrowser {
 				// Portal and access-gateway sign-in pages are only printed.
 				_ = os.Setenv(browser.EnvCommand, "none")
